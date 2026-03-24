@@ -1,0 +1,30 @@
+Backendi çalıştırmak için 
+
+--cd C:\PROJECTS\cronoi_project\cronoi_project\backend
+venv\Scripts\activate
+
+--uvicorn app.main:app --reload --port 8000
+
+Backendi durdurmak için 
+--control + C 
+
+
+
+Company insertü 
+
+--INSERT INTO users (id, company_id, email, password_hash, full_name, role, is_active)
+VALUES (
+    '00000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000001',
+    'demo@cronoi.com',
+    'demo_hash',
+    'Demo Kullanıcı',
+    'admin',
+    true
+)
+
+-- 2. Demo şirket ve kullanıcıyı ekle
+INSERT INTO companies (id, name, slug, plan, monthly_quota, used_quota, settings)
+VALUES (
+    '00000000-0000-0000-0000-000000000001',
+    'Demo Şirketi', 'demo', 'growth', 100, 0, '{}'
