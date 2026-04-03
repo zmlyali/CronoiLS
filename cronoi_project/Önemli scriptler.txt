@@ -8,6 +8,8 @@ venv\Scripts\activate
 Backendi durdurmak için 
 --control + C 
 
+Git e pushlamak için 
+---"c:\PROJECTS\cronoi_project\cronoi_project"; git status
 
 
 Company insertü 

@@ -12,7 +12,7 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm"; -- fuzzy search for product catalog
 
 CREATE TYPE subscription_plan AS ENUM ('free', 'starter', 'growth', 'enterprise');
 CREATE TYPE user_role AS ENUM ('owner', 'admin', 'operator', 'viewer');
-CREATE TYPE pallet_type AS ENUM ('euro', 'standard', 'uk', 'custom');
+CREATE TYPE pallet_type AS ENUM ('P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8', 'P9', 'P10');
 CREATE TYPE vehicle_type AS ENUM ('panelvan', 'kamyon', 'tir', 'konteyner20', 'konteyner40');
 CREATE TYPE constraint_type AS ENUM ('fragile', 'heavy', 'temp');
 CREATE TYPE shipment_status AS ENUM ('draft', 'optimizing', 'optimized', 'loading', 'loaded', 'delivered', 'cancelled');
@@ -129,7 +129,7 @@ CREATE TABLE shipments (
     created_by      UUID NOT NULL REFERENCES users(id),
     reference_no    TEXT NOT NULL,                  -- "SEV-2026-001"
     status          shipment_status NOT NULL DEFAULT 'draft',
-    pallet_type     pallet_type NOT NULL DEFAULT 'euro',
+    pallet_type     pallet_type NOT NULL DEFAULT 'P1',
     destination     TEXT,
     notes           TEXT,
     -- Optimizer sonuçları

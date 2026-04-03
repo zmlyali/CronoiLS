@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+# Temp/test files
+_test_*.py
+_test_*.js
+_find_*.js
+_temp_*.js
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+~$*
+
+# IDE
+.vscode/
+.idea/

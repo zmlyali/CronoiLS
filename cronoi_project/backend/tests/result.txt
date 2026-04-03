@@ -1,0 +1,58 @@
+﻿============================================================
+CRONOI LS ù Sprint 3 Integration Tests
+============================================================
+
+--- 1. Health Check ---
+  [PASS] Health endpoint -- ok
+
+--- 2. Transport Units ---
+.\venv\Scripts\python : Traceback (most recent call last):
+At line:1 char:1
++ .\venv\Scripts\python tests\test_sprint3.py 2>&1 | Out-File -Encoding ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last) 
+   ::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\PROJECTS\cronoi_project\cronoi_project\backend\tests\test_sprint3.py
+", line 173, in <module>
+  [PASS] Seed transport units
+  [PASS] Get pallet defs -- 8 tip
+  [PASS] Get vehicle defs -- 9 tip
+
+--- 3. Orders ---
+  [FAIL] Create order -- status=422
+  [FAIL] Order has id -- no id
+  [FAIL] Order has order_no -- ?
+  [PASS] List orders -- 6 adet
+
+--- 4. Shipment + Optimization ---
+  [PASS] Create shipment -- status=201
+  [PASS] Shipment has ref_no -- SEV-2026-0047
+  [PASS] Start optimization
+  [PASS] Optimization done -- polls=1, status=done
+  [PASS] Pallets created -- 1 palet
+
+--- 5. 3D Dimension Validation ---
+  [PASS] Palet#? Koltuk Takimi fits EUR -- 90.0x60.0cm in 80x120
+  [PASS] Palet#? Sehpa fits EUR -- 50.0x50.0cm in 80x120
+
+--- 6. Pallet Weight/Height ---
+  [PASS] Palet#? height <= 180cm -- 90.0cm
+  [PASS] Palet#? weight <= 1000kg -- 212.0kg
+
+--- 7. Soft Delete & Restore ---
+  [FAIL] Soft delete order
+  [FAIL] Deleted order returns 404
+  [FAIL] Restore order
+  [PASS] Restored order accessible
+
+--- 8. Shipment Complete ---
+  [FAIL] Complete shipment -- status=500
+    run_tests()
+  File "C:\PROJECTS\cronoi_project\cronoi_project\backend\tests\test_sprint3.py
+", line 158, in run_tests
+    test("Order has shipment_ref", bool(od.get("shipment_ref")), od.get("shipme
+nt_ref", "none"))
+                                        ^^^^^^
+AttributeError: 'list' object has no attribute 'get'

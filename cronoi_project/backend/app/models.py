@@ -38,6 +38,7 @@ class Company(Base):
     shipments       = relationship("Shipment", back_populates="company")
     catalog_products = relationship("ProductCatalog", back_populates="company")
     vehicle_defs    = relationship("VehicleDefinition", back_populates="company")
+    pallet_defs     = relationship("PalletDefinition", back_populates="company")
     constraint_defs = relationship("ConstraintDefinition", back_populates="company")
 
 
@@ -63,7 +64,7 @@ class Shipment(Base):
     created_by              = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
     reference_no            = Column(String(50), nullable=False)
     status                  = Column(String(30), nullable=False, default="draft")
-    pallet_type             = Column(String(20), nullable=False, default="euro")
+    pallet_type             = Column(String(20), nullable=False, default="P1")
     destination             = Column(Text)
     notes                   = Column(Text)
     optimizer_version       = Column(String(50))
@@ -71,6 +72,8 @@ class Shipment(Base):
     created_at              = Column(DateTime(timezone=True), server_default=func.now())
     updated_at              = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     optimized_at            = Column(DateTime(timezone=True))
+    loaded_at               = Column(DateTime(timezone=True))
+    delivered_at            = Column(DateTime(timezone=True))
     deleted_at              = Column(DateTime(timezone=True))
 
     company     = relationship("Company", back_populates="shipments")
@@ -78,6 +81,7 @@ class Shipment(Base):
     pallets     = relationship("Pallet", back_populates="shipment", cascade="all, delete-orphan")
     scenarios   = relationship("Scenario", back_populates="shipment", cascade="all, delete-orphan")
     loading_plans = relationship("LoadingPlan", back_populates="shipment", cascade="all, delete-orphan")
+    order_links = relationship("OrderShipment", backref="shipment", cascade="all, delete-orphan")
 
 
 class ShipmentProduct(Base):
@@ -194,21 +198,51 @@ class VehicleDefinition(Base):
     __tablename__ = "vehicle_definitions"
     id              = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     company_id      = Column(UUID(as_uuid=False), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    code            = Column(String(30), nullable=False)          # programatic key: panelvan, kamyon, tir...
     name            = Column(String(100), nullable=False)
     type            = Column(String(30), nullable=False)
+    icon            = Column(String(10), default="🚛")
     length_cm       = Column(Float, nullable=False)
     width_cm        = Column(Float, nullable=False)
     height_cm       = Column(Float, nullable=False)
     max_weight_kg   = Column(Float, nullable=False)
+    usable_volume_m3= Column(Float, nullable=True)
+    pallet_capacity = Column(Integer, nullable=False, default=0)
     base_cost       = Column(Float, nullable=False, default=0)
     fuel_per_km     = Column(Float, nullable=False, default=0)
     driver_per_hour = Column(Float, nullable=False, default=0)
     opportunity_cost = Column(Float, nullable=False, default=0)
+    is_system_default = Column(Boolean, nullable=False, default=False)
     is_active       = Column(Boolean, nullable=False, default=True)
+    sort_order      = Column(Integer, nullable=False, default=0)
     notes           = Column(Text)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     company         = relationship("Company", back_populates="vehicle_defs")
+
+
+class PalletDefinition(Base):
+    __tablename__ = "pallet_definitions"
+    id              = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    company_id      = Column(UUID(as_uuid=False), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    code            = Column(String(30), nullable=False)          # euro, standard, half_euro...
+    name            = Column(String(100), nullable=False)
+    icon            = Column(String(10), default="📦")
+    length_cm       = Column(Float, nullable=False)
+    width_cm        = Column(Float, nullable=False)
+    max_height_cm   = Column(Float, nullable=False, default=180)
+    max_weight_kg   = Column(Float, nullable=False)
+    usable_area_m2  = Column(Float)                              # auto: (l*w)/10000
+    tare_weight_kg  = Column(Float, nullable=False, default=25)  # palet kendi ağırlığı
+    is_system_default = Column(Boolean, nullable=False, default=False)
+    is_active       = Column(Boolean, nullable=False, default=True)
+    sort_order      = Column(Integer, nullable=False, default=0)
+    notes           = Column(Text)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    company         = relationship("Company", back_populates="pallet_defs")
 
 
 class ConstraintDefinition(Base):
@@ -232,3 +266,58 @@ class ConstraintDefinition(Base):
     updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     company         = relationship("Company", back_populates="constraint_defs")
+
+
+class Order(Base):
+    __tablename__ = "orders"
+    id                   = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    company_id           = Column(UUID(as_uuid=False), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    created_by           = Column(UUID(as_uuid=False), ForeignKey("users.id"), nullable=False)
+    order_no             = Column(String(50), nullable=False)
+    project_code         = Column(String(50))
+    customer_name        = Column(String(200), nullable=False)
+    address              = Column(Text)
+    city                 = Column(String(100))
+    postal_code          = Column(String(20))
+    country              = Column(String(100), default="TR")
+    contact_name         = Column(String(200))
+    contact_phone        = Column(String(50))
+    contact_email        = Column(String(200))
+    order_date           = Column(String(20))
+    requested_ship_date  = Column(String(20))
+    deadline_date        = Column(String(20))
+    status               = Column(String(30), nullable=False, default="pending")
+    notes                = Column(Text)
+    priority             = Column(Integer, nullable=False, default=3)
+    created_at           = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at           = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at           = Column(DateTime(timezone=True))
+
+    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    shipment_links = relationship("OrderShipment", backref="order", cascade="all, delete-orphan")
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+    id          = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    order_id    = Column(UUID(as_uuid=False), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    catalog_id  = Column(UUID(as_uuid=False), ForeignKey("product_catalog.id", ondelete="SET NULL"))
+    name        = Column(String(200), nullable=False)
+    sku         = Column(String(100))
+    quantity    = Column(Integer, nullable=False)
+    length_cm   = Column(Float, nullable=False)
+    width_cm    = Column(Float, nullable=False)
+    height_cm   = Column(Float, nullable=False)
+    weight_kg   = Column(Float, nullable=False)
+    constraints = Column(JSONB, nullable=False, default=list)
+    sort_order  = Column(Integer, nullable=False, default=0)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+    order = relationship("Order", back_populates="items")
+
+
+class OrderShipment(Base):
+    __tablename__ = "order_shipments"
+    order_id    = Column(UUID(as_uuid=False), ForeignKey("orders.id",    ondelete="CASCADE"), primary_key=True)
+    shipment_id = Column(UUID(as_uuid=False), ForeignKey("shipments.id", ondelete="CASCADE"), primary_key=True)
+    added_at    = Column(DateTime(timezone=True), server_default=func.now())
