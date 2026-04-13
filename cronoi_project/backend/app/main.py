@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api.v1 import shipments, constraints, orders, scenarios, transport_units
+from app.api.v1 import shipments, constraints, orders, scenarios, transport_units, vehicle_plans
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -48,6 +48,7 @@ app.include_router(orders.router,          prefix="/api/v1/orders",          tag
 app.include_router(scenarios.router,       prefix="/api/v1/scenarios",       tags=["Scenarios"])
 app.include_router(constraints.router,     prefix="/api/v1/constraints",     tags=["Constraints"])
 app.include_router(transport_units.router, prefix="/api/v1/transport-units", tags=["Transport Units"])
+app.include_router(vehicle_plans.router,  prefix="/api/v1/vehicle-plans",  tags=["Vehicle Plans"])
 
 
 @app.get("/api/health")

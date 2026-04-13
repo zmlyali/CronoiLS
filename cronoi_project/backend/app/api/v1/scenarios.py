@@ -145,12 +145,15 @@ async def generate_scenarios(
                 "pallet_count":     len(va.pallet_ids),
                 "current_weight_kg": round(va.current_weight_kg, 2),
                 "current_volume_m3": round(va.current_volume_m3, 4),
-                "fill_rate_pct":    round(va.current_weight_kg / va.vehicle.max_weight_kg * 100, 1) if va.vehicle.max_weight_kg else 0,
+                "vehicle_volume_m3": round(va.vehicle.volume_m3, 4),
+                "fill_rate_pct":    round(va.vol_utilization_pct, 1),
+                "weight_fill_pct":  round(va.weight_utilization_pct, 1),
                 "cost":             round(va.cost, 2),
                 "front_weight_kg":  va.front_weight_kg,
                 "rear_weight_kg":   va.rear_weight_kg,
                 "front_pct":        va.front_pct,
                 "balance_ok":       va.balance_ok,
+                "stacked_pairs":    va.stacked_pairs if hasattr(va, 'stacked_pairs') else [],
             })
 
         scenario_data = {
@@ -184,6 +187,53 @@ async def generate_scenarios(
 
     await db.commit()
     return {"scenarios": saved}
+
+
+class ScenarioSaveRequest(BaseModel):
+    name: str = "Araç Planı"
+    strategy: str = "manual"
+    total_cost: float = 0
+    cost_per_pallet: float = 0
+    total_vehicles: int = 0
+    avg_fill_rate_pct: float = 0
+    vehicle_assignments: list = Field(default_factory=list)
+
+
+@router.post("/{shipment_id}/save")
+async def save_scenario_from_frontend(
+    shipment_id: str,
+    payload: ScenarioSaveRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Frontend'den gelen senaryo verisini DB'ye kaydet (local optimizasyon sonucu)."""
+    shipment = await db.get(Shipment, shipment_id)
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Sevkiyat bulunamadı")
+
+    # Aynı sevkiyat için önceki senaryoları kaldır (seçili değil yap)
+    await db.execute(
+        update(Scenario)
+        .where(Scenario.shipment_id == shipment_id)
+        .values(is_selected=False)
+    )
+
+    scenario_id = str(uuid4())
+    scenario = Scenario(
+        id=scenario_id,
+        shipment_id=shipment_id,
+        name=payload.name,
+        strategy=payload.strategy,
+        total_cost=payload.total_cost,
+        cost_per_pallet=payload.cost_per_pallet,
+        total_vehicles=payload.total_vehicles or len(payload.vehicle_assignments),
+        avg_fill_rate_pct=payload.avg_fill_rate_pct,
+        is_recommended=True,
+        is_selected=True,
+        vehicle_assignments=payload.vehicle_assignments,
+    )
+    db.add(scenario)
+    await db.commit()
+    return {"id": scenario_id, "saved": True}
 
 
 @router.patch("/{scenario_id}/select")

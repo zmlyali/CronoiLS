@@ -108,27 +108,29 @@ class BulkOrderItem(BaseModel):
     constraint_code:     Optional[str] = None
 
 
-# CRONOI_LS_STATUS_MODEL.md v2 — kanonik sipariş statüleri
+# CRONOI_LS_STATUS_MODEL.md v3 — kanonik sipariş statüleri
 VALID_ORDER_STATUSES = [
     # Kanonik
-    "pending", "in_shipment", "pallet_planned", "vehicle_planned",
+    "draft", "ready", "pending", "in_shipment", "pallet_planned", "vehicle_planned",
     "loaded", "delivered", "in_suggestion", "cancelled",
     # Geriye dönük uyum (eski isimler)
     "planned", "load_planned", "loading_planned", "in_transit",
 ]
 ORDER_TRANSITIONS = {
-    # Kanonik geçişler
-    "pending":          ["in_shipment", "in_suggestion", "pallet_planned", "vehicle_planned", "cancelled"],
-    "in_suggestion":    ["in_shipment", "pallet_planned", "pending"],
-    "in_shipment":      ["pallet_planned", "vehicle_planned", "pending", "cancelled"],      # plandan silindi → pending
-    "pallet_planned":   ["vehicle_planned", "pending", "cancelled"],
-    "vehicle_planned":  ["loaded", "pending", "cancelled"],
+    # Kanonik geçişler — v3 (draft → ready → in_shipment akışı)
+    "draft":            ["ready", "cancelled"],                               # Taslak → Sevkiyata Hazır veya İptal
+    "ready":            ["in_shipment", "in_suggestion", "draft", "cancelled"],# Hazır → Plana alındı veya geri taslak
+    "pending":          ["ready", "in_shipment", "in_suggestion", "pallet_planned", "vehicle_planned", "cancelled"],  # Geriye uyum
+    "in_suggestion":    ["in_shipment", "pallet_planned", "ready", "draft"],
+    "in_shipment":      ["pallet_planned", "vehicle_planned", "ready", "cancelled"],
+    "pallet_planned":   ["vehicle_planned", "ready", "cancelled"],
+    "vehicle_planned":  ["loaded", "ready", "cancelled"],
     "loaded":           ["delivered"],
     "delivered":        [],
-    "cancelled":        [],
+    "cancelled":        ["draft"],                                              # İptal → tekrar taslak yapılabilir
     # Geriye dönük uyum
-    "planned":          ["pallet_planned", "loading_planned", "pending", "cancelled"],
-    "load_planned":     ["vehicle_planned", "loaded", "pending"],
+    "planned":          ["pallet_planned", "loading_planned", "ready", "cancelled"],
+    "load_planned":     ["vehicle_planned", "loaded", "ready"],
     "loading_planned":  ["loaded", "planned"],
     "in_transit":       ["delivered"],
 }
@@ -261,7 +263,7 @@ async def create_order(
         deadline_date=payload.deadline_date,
         priority=payload.priority,
         notes=payload.notes,
-        status="pending",
+        status="draft",
     )
     db.add(order)
     await db.flush()
@@ -338,14 +340,14 @@ async def group_suggestions(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Bekleyen siparişleri analiz eder, şehir+hafta bazında gruplar önerir.
+    Taslak ve hazır siparişleri analiz eder, şehir+hafta bazında gruplar önerir.
     Her grup = potansiyel tek sevkiyat.
     """
     from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(
             Order.company_id == DEMO_COMPANY_ID,
-            Order.status == "pending",
+            Order.status.in_(["draft", "ready", "pending"]),
             Order.deleted_at.is_(None),
         ).order_by(Order.requested_ship_date)
     )
@@ -465,7 +467,7 @@ async def bulk_import(
             requested_ship_date=meta.requested_ship_date,
             deadline_date=meta.deadline_date,
             priority=meta.priority,
-            status="pending",
+            status="draft",
         )
         db.add(order)
         await db.flush()
@@ -530,7 +532,7 @@ async def update_order(
         raise HTTPException(status_code=404, detail="Sipariş bulunamadı")
 
     # Sadece düzenlenebilir durumlarda izin ver
-    editable_statuses = ["pending", "in_shipment"]
+    editable_statuses = ["draft", "ready", "pending", "in_shipment"]
     if order.status not in editable_statuses:
         raise HTTPException(
             status_code=409,
@@ -677,3 +679,68 @@ async def restore_order(order_id: str, db: AsyncSession = Depends(get_db)):
     order.deleted_at = None
     await db.commit()
     return {"id": order_id, "status": order.status, "restored": True}
+
+
+@router.post("/{order_id}/reset")
+async def reset_order(order_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Siparişi sıfırla — statüyü 'draft' yap, bağlı sevkiyat kayıtlarını sil.
+    Yüklendi (loaded) ve Teslim Edildi (delivered) durumundaki siparişler sıfırlanamaz.
+    """
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import delete as sa_delete
+    from app.models import (
+        Shipment, ShipmentProduct, Pallet, PalletProduct,
+        Scenario, LoadingPlan, ShipmentPhoto
+    )
+
+    result = await db.execute(
+        select(Order).options(selectinload(Order.shipment_links)).where(Order.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+    if not order or order.deleted_at:
+        raise HTTPException(status_code=404, detail="Sipariş bulunamadı")
+
+    # loaded ve delivered sıfırlanamaz
+    if order.status in ("loaded", "delivered"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{order.status}' durumundaki sipariş sıfırlanamaz. Sadece yüklenmemiş siparişler sıfırlanabilir."
+        )
+
+    # Bağlı sevkiyatları bul ve sil
+    shipment_ids = [link.shipment_id for link in (order.shipment_links or [])]
+
+    if shipment_ids:
+        # Önce order_shipment bağlantılarını sil
+        await db.execute(
+            sa_delete(OrderShipment).where(OrderShipment.order_id == order_id)
+        )
+
+        for sid in shipment_ids:
+            # Bu sevkiyata başka sipariş bağlı mı kontrol et
+            other_links = await db.execute(
+                select(OrderShipment).where(
+                    OrderShipment.shipment_id == sid,
+                    OrderShipment.order_id != order_id,
+                )
+            )
+            has_other_orders = other_links.scalars().first() is not None
+
+            if not has_other_orders:
+                # Sevkiyatı tamamen sil (cascade ile alt kayıtlar da gider)
+                shipment = await db.get(Shipment, sid)
+                if shipment:
+                    await db.delete(shipment)
+
+    # Siparişi draft'a çek
+    order.status = "draft"
+    order.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return {
+        "id": order_id,
+        "status": "draft",
+        "reset": True,
+        "deleted_shipments": len(shipment_ids),
+    }

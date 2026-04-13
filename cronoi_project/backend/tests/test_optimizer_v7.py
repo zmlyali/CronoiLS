@@ -21,7 +21,7 @@ from app.services.optimizer import (
     BinPackingOptimizer3D, MixedBinPackingOptimizer,
     PalletConfig, ProductItem, ConstraintType, OptimizationParams,
     OptimizerSettings, ActionableError, ScenarioOptimizer,
-    VehicleConfig, calculate_bct, check_overlap, check_void_gaps,
+    VehicleConfig, OptimizedPallet, calculate_bct, check_overlap, check_void_gaps,
     PALLET_BOARD_HEIGHT_CM,
 )
 
@@ -540,6 +540,100 @@ def test_tight_packing():
 
 
 # ============================================================
+# 16. PALET İSTİFLEME (Stacking)
+# ============================================================
+
+def test_pallet_stacking():
+    header("16. Palet İstifleme (Stacking)")
+    from app.services.optimizer import PALLET_BOARD_HEIGHT_CM, PALLET_FOOTPRINT
+
+    # ── 16a: Normal stacking — 270cm truck, pallets ~100cm tall each ──
+    # Create pallets that CAN stack: 15+100+15+100 = 230 < 270
+    pallets_short = [
+        OptimizedPallet(pallet_number=i, pallet_type="P1",
+                        total_weight_kg=200 - i*10,  # Decreasing weight
+                        total_height_cm=100, total_volume_m3=0.5,
+                        fill_rate_pct=70)
+        for i in range(4)
+    ]
+
+    vehicle_tall = VehicleConfig(
+        id="v-tall", name="TIR (270cm)", type="tir",
+        length_cm=1360, width_cm=245, height_cm=270,
+        max_weight_kg=24000, pallet_capacity=2,  # Only 2 floor slots!
+        base_cost=1200, fuel_per_km=3, driver_per_hour=40,
+        opportunity_cost=200, distance_km=200, duration_hours=4,
+    )
+
+    so = ScenarioOptimizer(pallets_short, [vehicle_tall])
+    scenarios = so.generate_all()
+
+    # With 2 floor slots + stacking, should fit all 4 pallets in 1 vehicle
+    has_stacking = False
+    for s in scenarios:
+        for va in s.vehicles:
+            if va.stacked_pairs:
+                has_stacking = True
+                test(f"İstifleme var ({s.name})", len(va.stacked_pairs) > 0,
+                     f"{len(va.stacked_pairs)} çift")
+                # Check all pairs have valid structure
+                for sp in va.stacked_pairs:
+                    test("Pair yapısı doğru", "bottom" in sp and "top" in sp,
+                         f"bottom={sp.get('bottom')}, top={sp.get('top')}")
+                    test("Birleşik yükseklik ≤ 270cm",
+                         sp.get("combined_height_cm", 999) <= 270,
+                         f"{sp.get('combined_height_cm')}cm")
+    test("En az bir senaryoda istifleme var", has_stacking)
+
+    # ── 16b: Stacking NOT possible — tall pallets ──
+    pallets_tall = [
+        OptimizedPallet(pallet_number=i, pallet_type="P1",
+                        total_weight_kg=200, total_height_cm=200,
+                        total_volume_m3=0.5, fill_rate_pct=70)
+        for i in range(4)
+    ]
+    # 15+200+15+200 = 430 > 270 → stacking impossible
+    so2 = ScenarioOptimizer(pallets_tall, [vehicle_tall])
+    scenarios2 = so2.generate_all()
+    no_stacking = all(
+        len(va.stacked_pairs) == 0
+        for s in scenarios2 for va in s.vehicles
+    )
+    test("Uzun paletler istiflenemez", no_stacking)
+
+    # ── 16c: Weight stability — heavier on bottom ──
+    so3 = ScenarioOptimizer(pallets_short, [vehicle_tall])
+    scenarios3 = so3.generate_all()
+    for s in scenarios3:
+        for va in s.vehicles:
+            for sp in va.stacked_pairs:
+                bottom_w = next((p.total_weight_kg for p in pallets_short
+                                 if p.pallet_number == sp["bottom"]), 0)
+                top_w = next((p.total_weight_kg for p in pallets_short
+                              if p.pallet_number == sp["top"]), 0)
+                test(f"Alt daha ağır (P{sp['bottom']}≥P{sp['top']})",
+                     bottom_w >= top_w, f"{bottom_w}kg ≥ {top_w}kg")
+
+    # ── 16d: FRAGILE constraint prevents stacking ──
+    pallets_fragile = [
+        OptimizedPallet(pallet_number=1, pallet_type="P1",
+                        total_weight_kg=200, total_height_cm=100,
+                        total_volume_m3=0.5, fill_rate_pct=70),
+        OptimizedPallet(pallet_number=2, pallet_type="P1",
+                        total_weight_kg=100, total_height_cm=100,
+                        total_volume_m3=0.5, fill_rate_pct=70,
+                        constraints=[ConstraintType.FRAGILE]),
+    ]
+    so4 = ScenarioOptimizer(pallets_fragile, [vehicle_tall])
+    scenarios4 = so4.generate_all()
+    fragile_stacked = any(
+        len(va.stacked_pairs) > 0
+        for s in scenarios4 for va in s.vehicles
+    )
+    test("FRAGILE palet istiflenemez", not fragile_stacked)
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -563,6 +657,7 @@ if __name__ == "__main__":
     test_mixed_global_optimization()
     test_suggestions()
     test_tight_packing()
+    test_pallet_stacking()
 
     print(f"\n{'='*60}")
     total = PASS + FAIL

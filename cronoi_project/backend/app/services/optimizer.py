@@ -1,29 +1,24 @@
 """
-Cronoi LS — 3D Bin Packing Optimizer v10.0
-Rect-Skyline · Z-up · CoG-Balanced · Full OPTIMIZER_SPEC.md
+Cronoi LS — 3D Bin Packing Optimizer v9.0
+Rect-Skyline · CoG-Balanced · Binding-Dimension Vehicle Assignment · Full OPTIMIZER_SPEC.md
 
 GERÇEK TEK HEDEF:
   minimize N_vehicles
-  Palet sayısını minimize et → her paleti doldur
+  Her araç için: binding = min(vol_ratio, weight_ratio, pallet_ratio)
+  O boyutu doldur → diğerleri zaten maksimize olur
+  Palet sayısı minimize etme = araç eşiğini geçmemek
+  Yüksek doluluk = aracın bağlayıcı boyutunu doldurmak
 
-Koordinat Sistemi (Z-up, 3D Bin Packing Standardı):
-  X ekseni → palet genişliği (width_cm),  sol↔sağ
-  Y ekseni → palet uzunluğu (length_cm), ön↔arka
-  Z ekseni → yükseklik (max_height_cm),   zemin↑yukarı
-
-  placed_rects format: {"x", "y", "z", "dx", "dy", "dz"}
-  PackedItem: pos_x=width, pos_y=depth, pos_z=height
-
-v10.0 (Z-up Rect-Skyline):
-  - Z-up koordinat sistemi (3D paketleme standardı)
-  - VERTICAL_ONLY: ince boyut X (yan yana kitaplık), düşük Z tercih
-  - Palet optimizasyonu araç bağımsız (salt palet kısıtları)
-  - Local optimum eşiği settings’ten (target_fill_rate_pct)
-  - Scored candidate: bitişiklik + CoG + zemin stabilitesi + kenar yakınlığı
+v9.0 (Rect-Skyline):
+  - Heightmap yerine placed_rects üzerinden O(n) Y-base hesaplama
+  - Palet = kapalı kutu: X, Y, Z tüm eksenlerde sınır kontrolü
   - CoG (Ağırlık Merkezi) kontrolü: palet devrilme riski minimize
+  - Scored candidate: bitişiklik + CoG + zemin stabilitesi + kenar yakınlığı
+  - Aday limiti yok — rect-based sorgu yeterince hızlı
+  - İlk katman (zemin) stabilitesi: X-yönünde sıkı yan yana yerleşim
 
-Yerleşim Önceliği (BBL — Bottom-Back-Left):
-  Z-yönü (zemin → yukarı) → X-yönü (sol → sağ) → Y-yönü (ön → arka)
+Yerleşim Önceliği (KURAL-3, değiştirilemez):
+  X-yönü (yan yana) → Y-yönü (yeni satır) → Z-yönü (üst üste)
 
 Parametrik (KURAL-1): Hardcode yok.
 Validation (KURAL-2): Her optimizasyon sonrası zorunlu.
@@ -47,8 +42,8 @@ DEFAULT_OVERFLOW_TOLERANCE_PCT = 5.0
 
 # ── Yerleşim yönü skor ağırlıkları (KURAL-3) ──
 DIRECTION_SCORES = {
-    "x_extend": 500,
-    "y_new_row": 200,
+    "x_extend": 100,
+    "y_new_row": 50,
     "z_stack": 10,
 }
 
@@ -483,9 +478,9 @@ def check_overlap(rects: List[Dict]) -> List[Tuple[int, int]]:
         a = rects[i]
         for j in range(i + 1, len(rects)):
             b = rects[j]
-            if (a["y"] < b["y"] + b["dy"] and a["y"] + a["dy"] > b["y"] and
-                a["x"] < b["x"] + b["dx"] and a["x"] + a["dx"] > b["x"] and
-                a["z"] < b["z"] + b["dz"] and a["z"] + a["dz"] > b["z"]):
+            if (a["x"] < b["x"] + b["l"] and a["x"] + a["l"] > b["x"] and
+                a["z"] < b["z"] + b["w"] and a["z"] + a["w"] > b["z"] and
+                a["y"] < b["y"] + b["h"] and a["y"] + a["h"] > b["y"]):
                 overlaps.append((i, j))
     return overlaps
 
@@ -497,55 +492,45 @@ def check_void_gaps(rects: List[Dict], pallet_length: float,
     if not rects:
         return warnings
     # X-yönü
-    x_edges = sorted({0.0} | {r["y"] for r in rects} |
-                     {r["y"] + r["dy"] for r in rects} | {pallet_length})
+    x_edges = sorted({0.0} | {r["x"] for r in rects} |
+                     {r["x"] + r["l"] for r in rects} | {pallet_length})
     for i in range(len(x_edges) - 1):
         gap = x_edges[i + 1] - x_edges[i]
-        has_fill = any(r["y"] < x_edges[i + 1] and r["y"] + r["dy"] > x_edges[i] for r in rects)
+        has_fill = any(r["x"] < x_edges[i + 1] and r["x"] + r["l"] > x_edges[i] for r in rects)
         if not has_fill and gap > max_gap_cm:
             warnings.append(f"X-yönü boşluk {gap:.0f}cm > {max_gap_cm:.0f}cm (CTU Code) — dunnage bag önerilir")
     # Z-yönü
-    z_edges = sorted({0.0} | {r["x"] for r in rects} |
-                     {r["x"] + r["dx"] for r in rects} | {pallet_width})
+    z_edges = sorted({0.0} | {r["z"] for r in rects} |
+                     {r["z"] + r["w"] for r in rects} | {pallet_width})
     for i in range(len(z_edges) - 1):
         gap = z_edges[i + 1] - z_edges[i]
-        has_fill = any(r["x"] < z_edges[i + 1] and r["x"] + r["dx"] > z_edges[i] for r in rects)
+        has_fill = any(r["z"] < z_edges[i + 1] and r["z"] + r["w"] > z_edges[i] for r in rects)
         if not has_fill and gap > max_gap_cm:
             warnings.append(f"Z-yönü boşluk {gap:.0f}cm > {max_gap_cm:.0f}cm (CTU Code) — dunnage bag önerilir")
     return warnings
 
 
 # ============================================================
-# 3D Bin Packing — Rect-Skyline v10.0 (Z-up)
+# 3D Bin Packing — Rect-Skyline v9.0
 # ============================================================
 
 class BinPackingOptimizer3D:
     """
-    Rect-Skyline 3D Bin Packing v10.0 — Z-up Koordinat Sistemi
+    Rect-Skyline 3D Bin Packing v9.0
 
-    Gerçek hedef: minimize palet sayısı → her paleti doldur
+    Gerçek hedef: minimize N_vehicles → palet sayısını minimize et → her paleti doldur
 
-    Koordinat Sistemi (Z-up, Palet Orijin: sol-ön-alt köşe = (0,0,0)):
-      X ekseni (rect["x"], rect["dx"]) → palet genişliği (width_cm),  sol↔sağ
-      Y ekseni (rect["y"], rect["dy"]) → palet uzunluğu (length_cm), ön↔arka
-      Z ekseni (rect["z"], rect["dz"]) → yükseklik (max_height_cm),  zemin↑yukarı
-
-    placed_rects format: {"x":width_pos, "y":depth_pos, "z":height_pos,
-                          "dx":width_size, "dy":depth_size, "dz":height_size}
-
-    PackedItem: pos_x=width(X), pos_y=depth(Y), pos_z=height(Z)
-                width_cm=dx, length_cm=dy, height_cm=dz
-
-    VERTICAL_ONLY (Kitaplık Dizilimi):
-      Ürünün en ince boyutu (kalınlık) → X ekseni (yan yana kitaplık)
-      Diğer iki boyut → biri Y, biri Z (düşük Z tercih)
-      Örnek: Headboard (185×105×15) → TIR'da dx=15(X), dy=185(Y), dz=105(Z)
-
-    Palet optimizasyonu: Araç bağımsız (salt palet kısıtları)
-    Local optimum: avg_fill >= settings.target_fill_rate_pct
+    v9.0 DEĞİŞİKLİKLER:
+    - Heightmap kaldırıldı → placed_rects üzerinden O(n) Y-base hesaplama
+    - Palet = kapalı kutu: X + Z + Y sınır kontrolü (hard)
+    - Aday pozisyon limiti yok — rect-based sorgu O(n_items) → hızlı
+    - Pozisyon cache: _place_item → _do_place_in_pallet arası tekrar arama yok
+    - Fill rate: effective_max_height üzerinden hesaplanır (config.max_height_cm değil)
+    - CoG (ağırlık merkezi) kontrolü: palet merkezinden ±%15 sapma → soft penalty
+    - Scored candidate: bitişiklik + CoG + zemin stabilitesi + kenar yakınlığı
     """
 
-    ALGORITHM_VERSION = "rect-skyline-v10.0"
+    ALGORITHM_VERSION = "rect-skyline-v9.0"
 
     # ── Erken durdurma sabitleri ──
     _OPTIMALITY_GAP_PCT = 90.0       # Bu doluluk üzerinde local minimum kabul
@@ -570,8 +555,11 @@ class BinPackingOptimizer3D:
 
     @property
     def _effective_max_height(self) -> float:
-        """Z ekseni limiti: palet max yükseklik (salt palet kısıtı, araç bağımsız)."""
-        return self.config.max_height_cm - self.settings.height_safety_margin_cm
+        base = self.config.max_height_cm
+        if self.params.vehicle_max_height_cm > 0:
+            vehicle_cargo_h = self.params.vehicle_max_height_cm - self.config.tare_height_cm
+            base = min(base, vehicle_cargo_h)
+        return base - self.settings.height_safety_margin_cm
 
     @property
     def _overflow_length(self) -> float:
@@ -601,8 +589,8 @@ class BinPackingOptimizer3D:
         return sum(p.fill_rate_pct for p in self.pallets) / len(self.pallets)
 
     def _optimality_reached(self) -> bool:
-        """Optimality gap: doluluk >= hedef (settings) → local minimum yeterli."""
-        return self._avg_fill_rate() >= self.settings.target_fill_rate_pct
+        """Optimality gap: doluluk >= %90 → local minimum yeterli."""
+        return self._avg_fill_rate() >= self._OPTIMALITY_GAP_PCT
 
     def _should_stop(self) -> bool:
         """Durdurma koşulu: zaman VEYA optimality gap."""
@@ -730,9 +718,11 @@ class BinPackingOptimizer3D:
                 rotated = not (abs(l - L) < 0.01 and abs(w - W) < 0.01 and abs(h - H) < 0.01)
                 valid.append((l, w, h, rotated))
 
-        # Sıralama: düşük h tercih (stabil yerleşim, devrilme riski düşük)
-        # VERTICAL_ONLY dahil tüm türler için düşük yükseklik = daha iyi
-        valid.sort(key=lambda o: (o[2], max(o[0], o[1])))
+        # Sıralama: VERTICAL_ONLY → yüksek h tercih, diğerleri → düşük h tercih
+        if ConstraintType.VERTICAL_ONLY in c:
+            valid.sort(key=lambda o: (-o[2], max(o[0], o[1])))
+        else:
+            valid.sort(key=lambda o: (o[2], max(o[0], o[1])))
         return valid
 
     def _item_fits_pallet(self, item: ProductItem) -> bool:
@@ -764,8 +754,8 @@ class BinPackingOptimizer3D:
         x2, z2 = x + pl, z + pw
         for r in pallet.layout_data.get("placed_rects", []):
             # XZ düzleminde çakışma var mı?
-            if r["y"] < x2 and r["y"] + r["dy"] > x and r["x"] < z2 and r["x"] + r["dx"] > z:
-                top = r["z"] + r["dz"]
+            if r["x"] < x2 and r["x"] + r["l"] > x and r["z"] < z2 and r["z"] + r["w"] > z:
+                top = r["y"] + r["h"]
                 if top > max_top:
                     max_top = top
         return max_top
@@ -856,16 +846,16 @@ class BinPackingOptimizer3D:
         layers = pallet.layout_data.setdefault("layers", [])
         placed_in_layer = False
         for layer in layers:
-            if abs(layer["z_base"] - base_y) < 0.5:
-                layer["rects"].append({"x": z, "y": x, "dx": pw, "dy": pl})
+            if abs(layer["y_base"] - base_y) < 0.5:
+                layer["rects"].append({"x": x, "z": z, "l": pl, "w": pw})
                 if ph_item > layer["height"]:
                     layer["height"] = ph_item
                 placed_in_layer = True
                 break
         if not placed_in_layer:
-            layers.append({"z_base": base_y, "height": ph_item,
-                           "rects": [{"x": z, "y": x, "dx": pw, "dy": pl}]})
-            layers.sort(key=lambda l: l["z_base"])
+            layers.append({"y_base": base_y, "height": ph_item,
+                           "rects": [{"x": x, "z": z, "l": pl, "w": pw}]})
+            layers.sort(key=lambda l: l["y_base"])
 
     def _create_empty_pallet(self) -> OptimizedPallet:
         p = OptimizedPallet(
@@ -895,29 +885,29 @@ class BinPackingOptimizer3D:
     # ── CoG (Ağırlık Merkezi) Hesaplama ──
 
     def _compute_cog(self, pallet: OptimizedPallet) -> Tuple[float, float]:
-        """Palet ağırlık merkezini hesapla → (cog_x, cog_y). X=width, Y=depth."""
+        """Palet ağırlık merkezini hesapla → (cog_x, cog_z)."""
         total_w = 0.0
         wx_sum = 0.0
-        wy_sum = 0.0
+        wz_sum = 0.0
         for p in pallet.products:
             w = p.weight_kg
             total_w += w
-            wx_sum += w * (p.pos_x + p.width_cm / 2.0)
-            wy_sum += w * (p.pos_y + p.length_cm / 2.0)
+            wx_sum += w * (p.pos_x + p.length_cm / 2.0)
+            wz_sum += w * (p.pos_z + p.width_cm / 2.0)
         if total_w <= 0:
-            return (self.config.width_cm / 2.0, self.config.length_cm / 2.0)
-        return (wx_sum / total_w, wy_sum / total_w)
+            return (self.config.length_cm / 2.0, self.config.width_cm / 2.0)
+        return (wx_sum / total_w, wz_sum / total_w)
 
     def _cog_deviation_pct(self, pallet: OptimizedPallet) -> float:
         """CoG'un palet merkezinden sapma yüzdesi (0–100). Küçük = iyi."""
         if not pallet.products:
             return 0.0
-        cog_x, cog_y = self._compute_cog(pallet)
-        center_x = self.config.width_cm / 2.0
-        center_y = self.config.length_cm / 2.0
+        cog_x, cog_z = self._compute_cog(pallet)
+        center_x = self.config.length_cm / 2.0
+        center_z = self.config.width_cm / 2.0
         dev_x = abs(cog_x - center_x) / center_x * 100 if center_x > 0 else 0
-        dev_y = abs(cog_y - center_y) / center_y * 100 if center_y > 0 else 0
-        return max(dev_x, dev_y)
+        dev_z = abs(cog_z - center_z) / center_z * 100 if center_z > 0 else 0
+        return max(dev_x, dev_z)
 
     # ── Aday Pozisyon Üretici (Extreme Point / Rect Edge) ──
 
@@ -926,14 +916,14 @@ class BinPackingOptimizer3D:
         """placed_rects kenarlarından aday X,Z pozisyonlar üret.
         Yalnızca extreme point'ler (rect kenarları + orijin).
         Merkez pozisyon EKLENMEZ — sıkı paketleme önceliklidir.
-        BBL sıralaması: Z artan (sol→sağ), X artan (ön→arka)."""
+        X-yönü öncelikli (KURAL-3). Sıralı: Z artan, X artan."""
         pL = self._overflow_length
         pW = self._overflow_width
         rects = pallet.layout_data.get("placed_rects", [])
 
         # Yalnızca extreme point'ler: rect kenarları + orijin
-        xs = sorted({0.0} | {r["y"] + r["dy"] for r in rects} | {r["y"] for r in rects})
-        zs = sorted({0.0} | {r["x"] + r["dx"] for r in rects} | {r["x"] for r in rects})
+        xs = sorted({0.0} | {r["x"] + r["l"] for r in rects} | {r["x"] for r in rects})
+        zs = sorted({0.0} | {r["z"] + r["w"] for r in rects} | {r["z"] for r in rects})
 
         candidates = []
         for z in zs:
@@ -969,19 +959,19 @@ class BinPackingOptimizer3D:
         touch_area = 0.0
         for r in rects:
             # X-yönünde bitişik (sağ veya sol kenar)
-            if abs(x - (r["y"] + r["dy"])) < 0.5 or abs((x + pl) - r["y"]) < 0.5:
-                y_overlap = max(0, min(base_y + ph, r["z"] + r["dz"]) - max(base_y, r["z"]))
-                z_overlap = max(0, min(z + pw, r["x"] + r["dx"]) - max(z, r["x"]))
+            if abs(x - (r["x"] + r["l"])) < 0.5 or abs((x + pl) - r["x"]) < 0.5:
+                y_overlap = max(0, min(base_y + ph, r["y"] + r["h"]) - max(base_y, r["y"]))
+                z_overlap = max(0, min(z + pw, r["z"] + r["w"]) - max(z, r["z"]))
                 touch_area += y_overlap * z_overlap
             # Z-yönünde bitişik (ön veya arka kenar)
-            if abs(z - (r["x"] + r["dx"])) < 0.5 or abs((z + pw) - r["x"]) < 0.5:
-                y_overlap = max(0, min(base_y + ph, r["z"] + r["dz"]) - max(base_y, r["z"]))
-                x_overlap = max(0, min(x + pl, r["y"] + r["dy"]) - max(x, r["y"]))
+            if abs(z - (r["z"] + r["w"])) < 0.5 or abs((z + pw) - r["z"]) < 0.5:
+                y_overlap = max(0, min(base_y + ph, r["y"] + r["h"]) - max(base_y, r["y"]))
+                x_overlap = max(0, min(x + pl, r["x"] + r["l"]) - max(x, r["x"]))
                 touch_area += y_overlap * x_overlap
             # Y-yönünde bitişik (altında yatan ürün)
-            if abs(base_y - (r["z"] + r["dz"])) < 0.5:
-                x_overlap = max(0, min(x + pl, r["y"] + r["dy"]) - max(x, r["y"]))
-                z_overlap = max(0, min(z + pw, r["x"] + r["dx"]) - max(z, r["x"]))
+            if abs(base_y - (r["y"] + r["h"])) < 0.5:
+                x_overlap = max(0, min(x + pl, r["x"] + r["l"]) - max(x, r["x"]))
+                z_overlap = max(0, min(z + pw, r["z"] + r["w"]) - max(z, r["z"]))
                 touch_area += x_overlap * z_overlap
         # Normalize: max temas = ürün yüzey alanının toplamı
         item_surface = 2 * (pl * pw + pl * ph + pw * ph)
@@ -1012,8 +1002,8 @@ class BinPackingOptimizer3D:
 
         # 5. Hizalama bonusu: aynı X veya Z çizgisindeki ürünlerle sıra/kolon oluştur
         if rects:
-            x_aligned = any(abs(r["y"] - x) < 0.5 for r in rects)
-            z_aligned = any(abs(r["x"] - z) < 0.5 for r in rects)
+            x_aligned = any(abs(r["x"] - x) < 0.5 for r in rects)
+            z_aligned = any(abs(r["z"] - z) < 0.5 for r in rects)
             if x_aligned:
                 score += 15
             if z_aligned:
@@ -1023,17 +1013,17 @@ class BinPackingOptimizer3D:
         #    Pozitif bonus verilmez — sıkı paketleme öncelikli.
         #    CoG dengesi doğal olarak köşeden-dışa paketlemeyle sağlanır.
         if pallet.products:
-            center_x = self.config.width_cm / 2.0
-            center_y = self.config.length_cm / 2.0
+            center_x = self.config.length_cm / 2.0
+            center_z = self.config.width_cm / 2.0
             total_w = sum(p.weight_kg for p in pallet.products)
-            cur_cog_x, cur_cog_y = self._compute_cog(pallet)
+            cur_cog_x, cur_cog_z = self._compute_cog(pallet)
             new_tw = total_w + item.weight_kg
             if new_tw > 0:
-                new_cog_x = (cur_cog_x * total_w + (z + pw / 2.0) * item.weight_kg) / new_tw
-                new_cog_y = (cur_cog_y * total_w + (x + pl / 2.0) * item.weight_kg) / new_tw
+                new_cog_x = (cur_cog_x * total_w + (x + pl / 2.0) * item.weight_kg) / new_tw
+                new_cog_z = (cur_cog_z * total_w + (z + pw / 2.0) * item.weight_kg) / new_tw
                 dev_x = abs(new_cog_x - center_x) / center_x * 100 if center_x > 0 else 0
-                dev_y = abs(new_cog_y - center_y) / center_y * 100 if center_y > 0 else 0
-                cog_dev = max(dev_x, dev_y)
+                dev_z = abs(new_cog_z - center_z) / center_z * 100 if center_z > 0 else 0
+                cog_dev = max(dev_x, dev_z)
                 # Sadece ceza: sapma >%15 olursa puan düşür
                 if cog_dev > 15:
                     score -= (cog_dev - 15) * 2
@@ -1041,19 +1031,6 @@ class BinPackingOptimizer3D:
         # 7. Ağır ürün tabanda bonusu
         if item.weight_kg > 30 and is_ground:
             score += 20
-
-        # 8. Yükseklik verimliliği: düşük h tercih (devrilme riski ↓, üst alan ↑)
-        #    Aynı pozisyonda kısa orientasyon uzun orientasyona tercih edilir
-        if pH > 0:
-            score -= (ph / pH) * 30
-
-        # 9. Zemin kapasite bonusu: küçük footprint → yan yana daha çok sığar
-        #    Headboard gibi ince ürünlerde bookshelf dizilimini tercih ettirir
-        floor_copies_x = max(1, int(pL // pl))
-        floor_copies_z = max(1, int(pW // pw))
-        floor_capacity = floor_copies_x * floor_copies_z
-        if floor_capacity > 1:
-            score += min(floor_capacity, 20) * 8
 
         return score
 
@@ -1106,9 +1083,9 @@ class BinPackingOptimizer3D:
         """3D çakışma kontrolü — placed_rects üzerinden."""
         x2, z2, y2 = x + pl, z + pw, y + ph
         for r in pallet.layout_data.get("placed_rects", []):
-            if (r["y"] < x2 and r["y"] + r["dy"] > x and
-                r["x"] < z2 and r["x"] + r["dx"] > z and
-                r["z"] < y2 and r["z"] + r["dz"] > y):
+            if (r["x"] < x2 and r["x"] + r["l"] > x and
+                r["z"] < z2 and r["z"] + r["w"] > z and
+                r["y"] < y2 and r["y"] + r["h"] > y):
                 return True
         return False
 
@@ -1211,8 +1188,8 @@ class BinPackingOptimizer3D:
         Aday pozisyonlar: mevcut dikdörtgenlerin kenarları + orijin."""
         rects = layer["rects"]
 
-        xs = sorted({0.0} | {r["y"] + r["dy"] for r in rects} | {r["y"] for r in rects})
-        zs = sorted({0.0} | {r["x"] + r["dx"] for r in rects} | {r["x"] for r in rects})
+        xs = sorted({0.0} | {r["x"] + r["l"] for r in rects} | {r["x"] for r in rects})
+        zs = sorted({0.0} | {r["z"] + r["w"] for r in rects} | {r["z"] for r in rects})
 
         for z in zs:
             if z + pw > pW + 0.01:
@@ -1229,8 +1206,8 @@ class BinPackingOptimizer3D:
         """2D XZ düzleminde çakışma kontrol (aynı katman)."""
         x2, z2 = x + l, z + w
         for r in rects:
-            if (r["y"] < x2 and r["y"] + r["dy"] > x and
-                    r["x"] < z2 and r["x"] + r["dx"] > z):
+            if (r["x"] < x2 and r["x"] + r["l"] > x and
+                    r["z"] < z2 and r["z"] + r["w"] > z):
                 return True
         return False
 
@@ -1250,9 +1227,9 @@ class BinPackingOptimizer3D:
         max_h = 0.0
         x2, z2 = x + pl, z + pw
         for r in placed:
-            if (r["y"] < x2 and r["y"] + r["dy"] > x and
-                    r["x"] < z2 and r["x"] + r["dx"] > z):
-                top = r["z"] + r["dz"]
+            if (r["x"] < x2 and r["x"] + r["l"] > x and
+                    r["z"] < z2 and r["z"] + r["w"] > z):
+                top = r["y"] + r["h"]
                 if top > max_h:
                     max_h = top
         return max_h
@@ -1280,7 +1257,7 @@ class BinPackingOptimizer3D:
             name=item.name, quantity=1,
             length_cm=pl, width_cm=pw, height_cm=ph, weight_kg=item.weight_kg,
             constraint=item.constraint, constraints=list(item.constraints),
-            pos_x=round(z, 2), pos_y=round(x, 2), pos_z=round(y, 2),
+            pos_x=round(x, 2), pos_y=round(y, 2), pos_z=round(z, 2),
             rotated=rotated, layer_class=item.layer_class,
             placement_direction=direction, order_id=item.order_id,
             bct_safety_factor=round(bct_sf, 2),
@@ -1288,7 +1265,7 @@ class BinPackingOptimizer3D:
         pallet.products.append(packed)
 
         rects = pallet.layout_data.setdefault("placed_rects", [])
-        rects.append({"x": z, "y": x, "z": y, "dx": pw, "dy": pl, "dz": ph})
+        rects.append({"x": x, "z": z, "y": y, "l": pl, "w": pw, "h": ph})
 
         pallet.total_weight_kg += item.weight_kg
         pallet.total_volume_m3 += (pl * pw * ph) / 1_000_000
@@ -1304,7 +1281,7 @@ class BinPackingOptimizer3D:
         if item.delivery_address and not pallet.delivery_address:
             pallet.delivery_address = item.delivery_address
 
-        all_tops = [r["z"] + r["dz"] for r in rects]
+        all_tops = [r["y"] + r["h"] for r in rects]
         pallet.total_height_cm = round(max(all_tops) if all_tops else 0, 2)
 
     # ── Constraint Engine ──
@@ -1538,16 +1515,16 @@ class BinPackingOptimizer3D:
 
             # Boyut
             for rect in rects:
-                if rect["y"] + rect["dy"] > overflow_l + 0.01:
+                if rect["x"] + rect["l"] > overflow_l + 0.01:
                     m = f"{pid}: Sağ kenar aşıldı"
                     violations.append(m)
                     errors.append(ActionableError(code="LENGTH_EXCEEDED", message=m, action_label="Ürün Çıkar", affected_pallet_id=pid))
-                if rect["x"] + rect["dx"] > overflow_w + 0.01:
+                if rect["z"] + rect["w"] > overflow_w + 0.01:
                     m = f"{pid}: Arka kenar aşıldı"
                     violations.append(m)
                     errors.append(ActionableError(code="WIDTH_EXCEEDED", message=m, action_label="Ürün Çıkar", affected_pallet_id=pid))
-                if rect["z"] + rect["dz"] > max_h + 0.001:
-                    m = f"{pid}: Yükseklik ({rect['z']+rect['dz']:.1f}cm) > max ({max_h:.1f}cm)"
+                if rect["y"] + rect["h"] > max_h + 0.001:
+                    m = f"{pid}: Yükseklik ({rect['y']+rect['h']:.1f}cm) > max ({max_h:.1f}cm)"
                     violations.append(m)
                     errors.append(ActionableError(code="HEIGHT_EXCEEDED", message=m, action_label="Paleti Böl", affected_pallet_id=pid))
 
@@ -1570,13 +1547,13 @@ class BinPackingOptimizer3D:
                 if p.constraint:
                     pc.add(p.constraint)
                 if ConstraintType.NO_STACK in pc:
-                    p_top = p.pos_z + p.height_cm
+                    p_top = p.pos_y + p.height_cm
                     for other in pallet.products:
                         if other is p:
                             continue
-                        if (other.pos_z >= p_top - 0.01 and
-                            other.pos_x < p.pos_x + p.width_cm and other.pos_x + other.width_cm > p.pos_x and
-                            other.pos_y < p.pos_y + p.length_cm and other.pos_y + other.length_cm > p.pos_y):
+                        if (other.pos_y >= p_top - 0.01 and
+                            other.pos_x < p.pos_x + p.length_cm and other.pos_x + other.length_cm > p.pos_x and
+                            other.pos_z < p.pos_z + p.width_cm and other.pos_z + other.width_cm > p.pos_z):
                             m = f"{pid}: NO_STACK ihlali: '{p.name}' üzerine '{other.name}'"
                             violations.append(m)
                             errors.append(ActionableError(code="NO_STACK_VIOLATION", message=m, action_label="Yeniden Düzenle", affected_pallet_id=pid))
@@ -1590,7 +1567,7 @@ class BinPackingOptimizer3D:
             # Soft: ağırlık hiyerarşisi
             for i, p1 in enumerate(pallet.products):
                 for p2 in pallet.products[i+1:]:
-                    if p1.pos_z < p2.pos_z and p2.weight_kg > p1.weight_kg * 1.5:
+                    if p1.pos_y < p2.pos_y and p2.weight_kg > p1.weight_kg * 1.5:
                         warnings.append(f"Ağırlık uyarısı: '{p2.name}' ({p2.weight_kg}kg) '{p1.name}' ({p1.weight_kg}kg) üzerinde")
 
             # Soft: void gap

@@ -612,7 +612,9 @@ async def _run_optimization(shipment_id: str, engine_params: dict = None, vehicl
                 "must_bottom": ConstraintType.MUST_BOTTOM,
                 "must_top": ConstraintType.MUST_TOP,
                 "horizontal_only": ConstraintType.HORIZONTAL_ONLY,
+                "horizontal": ConstraintType.HORIZONTAL_ONLY,
                 "vertical_only": ConstraintType.VERTICAL_ONLY,
+                "vertical": ConstraintType.VERTICAL_ONLY,
                 "this_side_up": ConstraintType.THIS_SIDE_UP,
                 "cold_chain": ConstraintType.COLD_CHAIN,
                 "hazmat": ConstraintType.HAZMAT,
@@ -753,7 +755,8 @@ async def _run_optimization(shipment_id: str, engine_params: dict = None, vehicl
                                 "constraints": [c.value if hasattr(c, 'value') else str(c) for c in (pr.constraints or [])],
                             }
                             for pr in op.products
-                        ]
+                        ],
+                        "stability": op.layout_data.get("stability"),
                     },
                 )
                 db.add(pallet)
@@ -879,6 +882,7 @@ async def get_pallets(
             "fill_rate_pct":   p.fill_rate_pct,
             "constraints":     p.constraints or [],
             "products":        products,
+            "stability":       (p.layout_data or {}).get("stability"),
         })
 
     return {"pallets": pallet_list, "total": len(pallet_list)}

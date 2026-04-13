@@ -335,3 +335,27 @@ class OrderShipment(Base):
     order_id    = Column(UUID(as_uuid=False), ForeignKey("orders.id",    ondelete="CASCADE"), primary_key=True)
     shipment_id = Column(UUID(as_uuid=False), ForeignKey("shipments.id", ondelete="CASCADE"), primary_key=True)
     added_at    = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class VehiclePlan(Base):
+    """Onaylanmış araç planı — sevkiyat → senaryo → araç atamaları."""
+    __tablename__ = "vehicle_plans"
+    id              = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    company_id      = Column(UUID(as_uuid=False), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    shipment_id     = Column(UUID(as_uuid=False), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False)
+    scenario_id     = Column(UUID(as_uuid=False), ForeignKey("scenarios.id", ondelete="SET NULL"))
+    reference_no    = Column(String(50))
+    status          = Column(String(30), nullable=False, default="approved")
+    total_cost      = Column(Float, nullable=False, default=0)
+    total_vehicles  = Column(Integer, nullable=False, default=0)
+    total_pallets   = Column(Integer, nullable=False, default=0)
+    total_weight_kg = Column(Float, nullable=False, default=0)
+    destination     = Column(Text)
+    notes           = Column(Text)
+    vehicles        = Column(JSONB, nullable=False, default=list)
+    order_ids       = Column(JSONB, nullable=False, default=list)
+    approved_at     = Column(DateTime(timezone=True), server_default=func.now())
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    shipment        = relationship("Shipment")
