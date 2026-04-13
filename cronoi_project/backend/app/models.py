@@ -82,6 +82,7 @@ class Shipment(Base):
     scenarios   = relationship("Scenario", back_populates="shipment", cascade="all, delete-orphan")
     loading_plans = relationship("LoadingPlan", back_populates="shipment", cascade="all, delete-orphan")
     order_links = relationship("OrderShipment", backref="shipment", cascade="all, delete-orphan")
+    photos      = relationship("ShipmentPhoto", back_populates="shipment", cascade="all, delete-orphan", order_by="ShipmentPhoto.sort_order")
 
 
 class ShipmentProduct(Base):
@@ -314,6 +315,19 @@ class OrderItem(Base):
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
 
     order = relationship("Order", back_populates="items")
+
+
+class ShipmentPhoto(Base):
+    __tablename__ = "shipment_photos"
+    id          = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    shipment_id = Column(UUID(as_uuid=False), ForeignKey("shipments.id", ondelete="CASCADE"), nullable=False)
+    filename    = Column(String(255), nullable=False)
+    mime_type   = Column(String(100), nullable=False, default="image/jpeg")
+    data        = Column(Text, nullable=False)  # base64 encoded
+    sort_order  = Column(Integer, nullable=False, default=0)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+    shipment    = relationship("Shipment", back_populates="photos")
 
 
 class OrderShipment(Base):

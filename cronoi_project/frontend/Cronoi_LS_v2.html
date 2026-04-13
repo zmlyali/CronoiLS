@@ -7199,7 +7199,12 @@
             UI.toast(`Araç planı onaylandı — ${result.success} sipariş vehicle_planned durumuna alındı`, 'success', 3000);
             // Seçili senaryoyu backend'e kaydet
             if (APP.state.apiMode && APP.state.selectedScenario?.id) {
-                API.patch(`/scenarios/${APP.state.selectedScenario.id}/select`, {}).catch(err => console.warn('[approveVehiclePlan] scenario select', err));
+                try {
+                    await API.patch(`/scenarios/${APP.state.selectedScenario.id}/select`, {});
+                } catch(err) {
+                    console.error('[approveVehiclePlan] scenario select hatası:', err);
+                    UI.toast('⚠️ Araç planı seçimi kaydedilemedi: ' + (err.message || err), 'error');
+                }
             }
             if (typeof renderOrdersList === 'function') renderOrdersList();
             switchStep(6);
@@ -8131,6 +8136,11 @@
                 const localV = APP.state.vehicles.find(v => v.id === a.vehicle_id || v.name === a.vehicle_name);
                 return {
                     ...(localV || {}),
+                    // API'den gelen boyut bilgileri — localV yoksa fallback olarak kullan
+                    length:           localV?.length  || a.length_cm  || 1360,
+                    width:            localV?.width   || a.width_cm   || 245,
+                    height:           localV?.height  || a.height_cm  || 270,
+                    maxWeight:        localV?.maxWeight || a.max_weight_kg || 24000,
                     assignedPallets:  a.pallet_ids || [],
                     currentWeight:    a.current_weight_kg || 0,
                     currentVolume:    a.current_volume_m3 || 0,
@@ -9507,10 +9517,396 @@
                 </div>`;
         }
 
+        // ── Inline Mini 3D Palet Renderer (Geçmiş Sevkiyat Detayı) ────────
+        const _histPallet3DCleanup = [];
+
+        function _renderHistoryPallet3DAll(pallets) {
+            // Önceki render'ları temizle
+            _histPallet3DCleanup.forEach(fn => fn());
+            _histPallet3DCleanup.length = 0;
+
+            pallets.forEach((p, pi) => {
+                const canvas = document.getElementById(`hist-pallet-3d-${pi}`);
+                if (!canvas) return;
+                const prods = (p.products || []).filter(pr => pr.pos_x != null && pr.pos_y != null && pr.pos_z != null);
+                if (!prods.length) return;
+                _renderHistoryPallet3D(canvas, p, prods, pi);
+            });
+        }
+
+        function _renderHistoryPallet3D(canvas, pallet, prods, palletIdx) {
+            const cfg = APP.config.palletTypes[pallet.pallet_type || APP.state.selectedPalletType || 'euro'] || APP.config.palletTypes['euro'];
+            const PW = (cfg.width  || 80) / 100;   // metre
+            const PL = (cfg.length || 120) / 100;
+            const PH = (cfg.maxHeight || 180) / 100;
+
+            const w = canvas.clientWidth || 460;
+            const h = canvas.clientHeight || 200;
+            canvas.width  = w * 2;  // retina
+            canvas.height = h * 2;
+
+            const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+            renderer.setSize(w, h, false);
+            renderer.setPixelRatio(2);
+            renderer.setClearColor(0xf0f2f8, 1);
+
+            const scene  = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(35, w / h, 0.01, 50);
+            // Kamerayı palete açılı bak
+            const maxDim = Math.max(PW, PL, PH);
+            camera.position.set(PL * 1.2, PH * 1.3, PW * 2.2);
+            camera.lookAt(0, PH * 0.35, 0);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+            dirLight.position.set(2, 4, 3);
+            scene.add(dirLight);
+
+            // Palet tahtası
+            const platGeo = new THREE.BoxGeometry(PL, 0.10, PW);
+            const platMat = new THREE.MeshStandardMaterial({ color: 0xc8a05a, roughness: 0.9 });
+            const platform = new THREE.Mesh(platGeo, platMat);
+            platform.position.set(0, 0.05, 0);
+            scene.add(platform);
+
+            // Renk paletleri
+            const palette = [0x667eea, 0xf093fb, 0x4facfe, 0x43e97b, 0xfa7c91, 0xf9cb28, 0x38bdf8, 0x6c757d, 0x8B5CF6];
+            function _nameColor(name) {
+                let h = 0;
+                for (let c = 0; c < name.length; c++) h = ((h << 5) - h) + name.charCodeAt(c);
+                return palette[Math.abs(h) % palette.length];
+            }
+
+            // Ürün kutuları — gerçek koordinatlarla
+            prods.forEach(pr => {
+                const iW = (pr.width_cm  || 0) / 100;
+                const iL = (pr.length_cm || 0) / 100;
+                const iH = (pr.height_cm || 0) / 100;
+                // pos_x=width pos, pos_y=length pos, pos_z=height pos
+                const bx = -PL/2 + (pr.pos_y / 100) + iL / 2;
+                const bz = -PW/2 + (pr.pos_x / 100) + iW / 2;
+                const by = 0.10 + (pr.pos_z / 100) + iH / 2;
+
+                const color = _nameColor(pr.name || '');
+                const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05 });
+                const box = new THREE.Mesh(new THREE.BoxGeometry(iL * 0.96, iH * 0.96, iW * 0.96), mat);
+                box.position.set(bx, by, bz);
+                scene.add(box);
+
+                const edgeMat = new THREE.LineBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.15 });
+                const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box.geometry), edgeMat);
+                edges.position.copy(box.position);
+                scene.add(edges);
+            });
+
+            // İlk render
+            renderer.render(scene, camera);
+
+            // Drag-to-rotate
+            let isDragging = false, prevX = 0, angle = 0;
+            const radius = camera.position.length();
+            const baseAngle = Math.atan2(camera.position.z, camera.position.x);
+            angle = baseAngle;
+
+            function onDown(e) { isDragging = true; prevX = (e.touches ? e.touches[0] : e).clientX; }
+            function onMove(e) {
+                if (!isDragging) return;
+                const cx = (e.touches ? e.touches[0] : e).clientX;
+                angle += (cx - prevX) * 0.008;
+                prevX = cx;
+                camera.position.x = Math.cos(angle) * radius * Math.cos(0.5);
+                camera.position.z = Math.sin(angle) * radius * Math.cos(0.5);
+                camera.lookAt(0, PH * 0.35, 0);
+                renderer.render(scene, camera);
+            }
+            function onUp() { isDragging = false; }
+
+            canvas.addEventListener('mousedown', onDown);
+            canvas.addEventListener('mousemove', onMove);
+            canvas.addEventListener('mouseup', onUp);
+            canvas.addEventListener('mouseleave', onUp);
+            canvas.addEventListener('touchstart', onDown, { passive: true });
+            canvas.addEventListener('touchmove', onMove, { passive: true });
+            canvas.addEventListener('touchend', onUp);
+
+            // Temizlik fonksiyonu
+            _histPallet3DCleanup.push(() => {
+                canvas.removeEventListener('mousedown', onDown);
+                canvas.removeEventListener('mousemove', onMove);
+                canvas.removeEventListener('mouseup', onUp);
+                canvas.removeEventListener('mouseleave', onUp);
+                canvas.removeEventListener('touchstart', onDown);
+                canvas.removeEventListener('touchmove', onMove);
+                canvas.removeEventListener('touchend', onUp);
+                renderer.dispose();
+            });
+        }
+
+        // ── Standalone Mini 3D Truck Renderer (Sevkiyat Detayı) ────────
+        const _sdTruck3DCleanup = [];
+
+        function _renderShipmentTruck3DAll(assignments, pallets, canvasPrefix) {
+            _sdTruck3DCleanup.forEach(fn => fn());
+            _sdTruck3DCleanup.length = 0;
+            const prefix = canvasPrefix || 'sd-truck-3d';
+
+            assignments.forEach((va, vi) => {
+                const canvas = document.getElementById(`${prefix}-${vi}`);
+                if (!canvas) return;
+                const palletIds = va.pallet_ids || va.palletIds || va.assigned_pallets || [];
+                const vehiclePallets = palletIds.length ? pallets.filter(p => palletIds.includes(p.id) || palletIds.includes(p.pallet_number)) : [];
+                _renderShipmentTruck3D(canvas, va, vehiclePallets);
+            });
+        }
+
+        function _renderShipmentTruck3D(canvas, va, vehiclePallets) {
+            const L = (va.length_cm || 1360) / 100;
+            const H = (va.height_cm || 270)  / 100;
+            const W = (va.width_cm  || 245)  / 100;
+
+            const w = canvas.clientWidth || 560;
+            const h = canvas.clientHeight || 260;
+            canvas.width  = w * 2;
+            canvas.height = h * 2;
+
+            const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+            renderer.setSize(w, h, false);
+            renderer.setPixelRatio(2);
+            renderer.setClearColor(0xf0f2f8, 1);
+            renderer.shadowMap.enabled = true;
+
+            const scene  = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(32, w / h, 0.01, 80);
+            camera.position.set(L * 0.9, H * 1.8, L * 0.85);
+            camera.lookAt(0, H * 0.35, 0);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.65);
+            dirLight.position.set(4, 8, 5);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            const group = new THREE.Group();
+            group.name = 'sd-truck-group';
+
+            const EL = 0.08;
+            const whiteMat  = new THREE.MeshStandardMaterial({ color: 0xd8dce4, roughness: 0.48, metalness: 0.22 });
+            const roofMat   = new THREE.MeshStandardMaterial({ color: 0xcdd0d8, roughness: 0.5, metalness: 0.28 });
+            const darkMetal = new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.6, metalness: 0.55 });
+            const cabMat    = new THREE.MeshStandardMaterial({ color: 0x0D1B2A, roughness: 0.38, metalness: 0.40 });
+            const glassMat  = new THREE.MeshStandardMaterial({ color: 0x88c8ff, transparent: true, opacity: 0.38, roughness: 0.05, metalness: 0.2 });
+            const rubberMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.95 });
+            const chromeMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.12, metalness: 0.95 });
+            const floorMat  = new THREE.MeshStandardMaterial({ color: 0x5a4a30, roughness: 0.88 });
+
+            // Şase kirişleri
+            [-W*0.36, W*0.36].forEach(z => {
+                const c = new THREE.Mesh(new THREE.BoxGeometry(L+2.8, 0.18, 0.22), darkMetal);
+                c.position.set(0, 0.09, z); group.add(c);
+            });
+
+            // Kuzine duvarlar (oluklu)
+            const RIB = Math.ceil(L / 0.32);
+            const rW  = (L - 0.04) / RIB;
+            for (let i = 0; i < RIB; i++) {
+                const rx = -L/2 + rW*(i+0.5);
+                const depth = i % 3 === 1 ? EL*1.5 : EL;
+                [-W/2, W/2].forEach(wz => {
+                    const m = new THREE.Mesh(new THREE.BoxGeometry(rW-0.01, H-0.18, depth), whiteMat);
+                    m.position.set(rx, H/2+0.09, wz + (wz < 0 ? -depth/2 : depth/2));
+                    group.add(m);
+                });
+            }
+
+            // Tavan
+            const roof = new THREE.Mesh(new THREE.BoxGeometry(L, EL, W+EL*2), roofMat);
+            roof.position.set(0, H+0.09, 0); group.add(roof);
+
+            // Ön duvar
+            const fwall = new THREE.Mesh(new THREE.BoxGeometry(EL, H-0.18, W), whiteMat);
+            fwall.position.set(-L/2, H/2+0.09, 0); group.add(fwall);
+
+            // İç taban
+            const iFloor = new THREE.Mesh(new THREE.BoxGeometry(L, 0.08, W-EL*2), floorMat);
+            iFloor.position.set(0, 0.22, 0); iFloor.receiveShadow = true; group.add(iFloor);
+
+            // Arka kapılar
+            [0,1].forEach(di => {
+                const dz = di===0 ? -(W/2-0.04)/2-0.01 : (W/2-0.04)/2+0.01;
+                const door = new THREE.Mesh(new THREE.BoxGeometry(EL*1.5, H-0.18, W/2-0.04), whiteMat);
+                door.position.set(L/2+EL, H/2+0.09, dz*(di===0?1:-1)); group.add(door);
+            });
+
+            // Kabin
+            const cabH = H*0.88, cabL = 2.3, cabX = -(L/2)-cabL/2;
+            const cabBase = new THREE.Mesh(new THREE.BoxGeometry(cabL, cabH*0.55, W+0.1), cabMat);
+            cabBase.position.set(cabX, cabH*0.275, 0); group.add(cabBase);
+            const cabTop = new THREE.Mesh(new THREE.BoxGeometry(cabL*0.9, cabH*0.48, (W+0.1)*0.9), cabMat);
+            cabTop.position.set(cabX+0.05, cabH*0.275+cabH*0.52, 0); group.add(cabTop);
+
+            // Cam
+            const ws = new THREE.Mesh(new THREE.BoxGeometry(0.05, cabH*0.28, (W+0.1)*0.8), glassMat);
+            ws.position.set(cabX-cabL/2+0.04, cabH*0.71, 0); group.add(ws);
+
+            // Farlar
+            [-(W+0.1)*0.32, (W+0.1)*0.32].forEach(z => {
+                const fl = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, 0.28),
+                    new THREE.MeshStandardMaterial({ color:0xffffee, emissive:0xffffaa, emissiveIntensity:0.45, roughness:0.1 }));
+                fl.position.set(cabX-cabL/2, 0.5, z); group.add(fl);
+            });
+
+            // Tampon
+            const bumper = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.35, W+0.2), darkMetal);
+            bumper.position.set(cabX-cabL/2-0.1, 0.38, 0); group.add(bumper);
+
+            // Tekerlekler
+            const AXLES = [{x:cabX-0.8,dual:false},{x:L/2-2.0,dual:true},{x:L/2-3.6,dual:true}];
+            const WO = W/2+0.18;
+            AXLES.forEach(({ x, dual }) => {
+                const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,W+(dual?0.7:0.5),8), chromeMat);
+                axle.rotation.x = Math.PI/2; axle.position.set(x, 0.45, 0); group.add(axle);
+                const sides = dual ? [[-WO-0.17,-WO],[WO,WO+0.17]] : [[-WO],[WO]];
+                sides.forEach(zArr => zArr.forEach(wz => {
+                    const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.47,0.47,0.24,20), rubberMat);
+                    tire.rotation.x = Math.PI/2; tire.position.set(x,0.47,wz); group.add(tire);
+                    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.29,0.29,0.26,12), chromeMat);
+                    rim.rotation.x = Math.PI/2; rim.position.set(x,0.47,wz); group.add(rim);
+                }));
+            });
+
+            // ── Paletleri yerleştir ──
+            const cfg  = APP.config.palletTypes[APP.state.selectedPalletType || 'euro'] || APP.config.palletTypes['euro'];
+            const PW   = (cfg?.width  || 80)  / 100;
+            const PL   = (cfg?.length || 120) / 100;
+            const COLS  = Math.max(1, Math.floor((W - 0.1) / (PW + 0.02)));
+            const GAP   = 0.03;
+
+            const palette = [0x667eea, 0xf093fb, 0x4facfe, 0x43e97b, 0xfa7c91, 0xf9cb28, 0x38bdf8, 0x6c757d, 0x8B5CF6];
+            function _nameColor(name) {
+                let h = 0;
+                for (let c = 0; c < name.length; c++) h = ((h << 5) - h) + name.charCodeAt(c);
+                return palette[Math.abs(h) % palette.length];
+            }
+
+            vehiclePallets.forEach((pallet, idx) => {
+                const col = idx % COLS, row = Math.floor(idx / COLS);
+                const px = (-L/2 + 0.05) + row * (PL + GAP) + PL / 2;
+                const pz = -((COLS - 1) / 2) * (PW + GAP) + col * (PW + GAP);
+
+                // Palet tahtası
+                const platMat = new THREE.MeshStandardMaterial({ color: 0xc8a05a, roughness: 0.9 });
+                const platform = new THREE.Mesh(new THREE.BoxGeometry(PL, 0.12, PW), platMat);
+                platform.position.set(px, 0.33, pz);
+                platform.castShadow = true;
+                group.add(platform);
+
+                // Ürünler
+                const prods = (pallet.products || []).filter(pr => pr.pos_x != null && pr.pos_y != null && pr.pos_z != null);
+                if (prods.length) {
+                    prods.forEach(pr => {
+                        const iW = (pr.width_cm  || 0) / 100;
+                        const iL = (pr.length_cm || 0) / 100;
+                        const iH = (pr.height_cm || 0) / 100;
+                        const bx = px - PL/2 + (pr.pos_y / 100) + iL / 2;
+                        const bz = pz - PW/2 + (pr.pos_x / 100) + iW / 2;
+                        const by = 0.39 + (pr.pos_z / 100) + iH / 2;
+
+                        const color = _nameColor(pr.name || '');
+                        const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05 });
+                        const box = new THREE.Mesh(new THREE.BoxGeometry(iL * 0.96, iH * 0.96, iW * 0.96), mat);
+                        box.position.set(bx, by, bz);
+                        box.castShadow = true;
+                        group.add(box);
+
+                        const edgeMat = new THREE.LineBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.15 });
+                        const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box.geometry), edgeMat);
+                        edges.position.copy(box.position);
+                        group.add(edges);
+                    });
+                } else {
+                    // Fallback: sadece renkli kutu
+                    const totalH = (pallet.total_height_cm || 100) / 100;
+                    const baseColor = palette[idx % palette.length];
+                    const mat = new THREE.MeshStandardMaterial({ color: baseColor, roughness: 0.6, metalness: 0.05, transparent: true, opacity: 0.85 });
+                    const box = new THREE.Mesh(new THREE.BoxGeometry(PL * 0.94, totalH * 0.94, PW * 0.94), mat);
+                    box.position.set(px, 0.39 + totalH / 2, pz);
+                    box.castShadow = true;
+                    group.add(box);
+                }
+
+                // Palet numarası sprite
+                const labelCanvas = document.createElement('canvas');
+                labelCanvas.width = 128; labelCanvas.height = 64;
+                const ctx = labelCanvas.getContext('2d');
+                ctx.fillStyle = 'rgba(0,0,0,0.6)';
+                ctx.fillRect(0, 0, 128, 64);
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 28px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('P' + (pallet.pallet_number || idx + 1), 64, 32);
+                const tex = new THREE.CanvasTexture(labelCanvas);
+                const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+                sprite.scale.set(0.55, 0.28, 1);
+                sprite.position.set(px, H * 0.85, pz);
+                group.add(sprite);
+            });
+
+            scene.add(group);
+
+            // İlk render
+            renderer.render(scene, camera);
+
+            // Drag-to-rotate
+            let isDragging = false, prevX = 0, angle = 0;
+            const radius = camera.position.length();
+            const baseAngle = Math.atan2(camera.position.z, camera.position.x);
+            angle = baseAngle;
+            const camY = camera.position.y;
+
+            function onDown(e) { isDragging = true; prevX = (e.touches ? e.touches[0] : e).clientX; }
+            function onMove(e) {
+                if (!isDragging) return;
+                const cx = (e.touches ? e.touches[0] : e).clientX;
+                angle += (cx - prevX) * 0.006;
+                prevX = cx;
+                camera.position.x = Math.cos(angle) * radius * Math.cos(0.4);
+                camera.position.z = Math.sin(angle) * radius * Math.cos(0.4);
+                camera.position.y = camY;
+                camera.lookAt(0, H * 0.35, 0);
+                renderer.render(scene, camera);
+            }
+            function onUp() { isDragging = false; }
+
+            canvas.addEventListener('mousedown', onDown);
+            canvas.addEventListener('mousemove', onMove);
+            canvas.addEventListener('mouseup', onUp);
+            canvas.addEventListener('mouseleave', onUp);
+            canvas.addEventListener('touchstart', onDown, { passive: true });
+            canvas.addEventListener('touchmove', onMove, { passive: true });
+            canvas.addEventListener('touchend', onUp);
+
+            _sdTruck3DCleanup.push(() => {
+                canvas.removeEventListener('mousedown', onDown);
+                canvas.removeEventListener('mousemove', onMove);
+                canvas.removeEventListener('mouseup', onUp);
+                canvas.removeEventListener('mouseleave', onUp);
+                canvas.removeEventListener('touchstart', onDown);
+                canvas.removeEventListener('touchmove', onMove);
+                canvas.removeEventListener('touchend', onUp);
+                renderer.dispose();
+            });
+        }
+
         function openHistoryPhotoLightbox(shipmentId, idx) {
             const record = APP.state.completedShipments.find(r => r.id === shipmentId);
             if (!record?.photos?.length) return;
             openPhotoLightbox(record.photos, idx);
+        }
+
+        function _openHistoryPhotoByUrl(urlArray, idx) {
+            if (!urlArray?.length) return;
+            openPhotoLightbox(urlArray, idx);
         }
 
         // ── Sevkiyat Detay Drawer ──────────────────────────────────────────
@@ -9549,12 +9945,30 @@
                 } else {
                     const local = APP.state.completedShipments.find(s => s.id === id);
                     if (!local) throw new Error('Kayıt bulunamadı');
-                    data = { ...local, orders: local.orders || [], pallets: [], products: [], selected_scenario: null };
+                    data = {
+                        ...local,
+                        orders:   local.orders || [],
+                        pallets:  local.pallets || [],
+                        products: local.products || [],
+                        selected_scenario: local.selected_scenario || null,
+                    };
                 }
                 refEl.textContent  = data.reference_no || id;
                 destEl.textContent = data.destination  || '';
                 statEl.innerHTML   = _statusBadge(data.status);
                 body.innerHTML     = _buildHistoryDetailHTML(data);
+
+                // 3D palet render
+                if (data.pallets?.length) {
+                    setTimeout(() => _renderHistoryPallet3DAll(data.pallets), 120);
+                }
+                // 3D araç render (geçmiş sevkiyat drawer)
+                if (data.selected_scenario?.vehicle_assignments?.length) {
+                    setTimeout(() => {
+                        const va = data.selected_scenario.vehicle_assignments;
+                        _renderShipmentTruck3DAll(va, data.pallets || [], 'hist-truck-3d');
+                    }, 200);
+                }
             } catch(err) {
                 body.innerHTML = `<div style="color:#E24B4A;padding:24px;font-size:.85rem">
                     <i class="bi bi-exclamation-triangle"></i> Hata: ${err.message}</div>`;
@@ -9653,17 +10067,19 @@
                         </div>
                     </div>
                     ${assignments.length ? `
-                    <div style="display:flex;flex-direction:column;gap:6px">
+                    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px">
                         ${assignments.map((a,i) => {
                             const aFill = Math.round(a.fill_rate_pct || a.fillRate || 0);
                             return `<div style="display:flex;align-items:center;gap:10px;font-size:.78rem">
                                 <div style="width:68px;color:#555;flex-shrink:0">TIR ${i+1}</div>
                                 <div style="flex:1">${_bar(aFill, 160)}</div>
                                 <div style="width:36px;text-align:right;font-weight:700;color:${_fc(aFill)}">${aFill}%</div>
-                                <div style="color:#888;width:50px;text-align:right">${a.palletCount||a.pallet_count||'?'} pal.</div>
+                                <div style="color:#888;width:50px;text-align:right">${a.pallet_count||a.palletCount||'?'} pal.</div>
                             </div>`;
                         }).join('')}
-                    </div>` : ''}
+                    </div>
+                    ${assignments.map((a,i) => `<canvas id="hist-truck-3d-${i}" style="width:100%;height:220px;border-radius:10px;background:#f0f2f8;cursor:grab;margin-bottom:8px"></canvas>`).join('')}
+                    ` : ''}
                 `);
             }
 
@@ -9705,14 +10121,15 @@
                     `<div style="color:#bbb;font-size:.8rem;text-align:center;padding:8px">Sipariş bulunamadı</div>`);
             }
 
-            /* ── 4. Palet detayı (ürünlerle birlikte) ── */
+            /* ── 4. Palet detayı (ürünlerle birlikte + inline 3D) ── */
             let palletsCard = '';
             if (pallets.length) {
                 palletsCard = _card('Palet Doluluk Detayı', 'boxes', `
                     <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:12px">
-                        ${pallets.map(p => {
+                        ${pallets.map((p, pi) => {
                             const fill = Math.round(p.fill_rate_pct || 0);
                             const prods = p.products || [];
+                            const has3D = prods.some(pr => pr.pos_x != null && pr.pos_y != null && pr.pos_z != null);
                             return `<div style="margin-bottom:6px">
                                 <div style="display:flex;align-items:center;gap:8px;font-size:.77rem">
                                     <div style="width:54px;color:#555;flex-shrink:0;font-weight:600">Palet ${p.pallet_number}</div>
@@ -9723,6 +10140,9 @@
                                 ${prods.length ? `<div style="margin-left:54px;margin-top:3px;padding-left:8px;border-left:2px solid #eef1ff">
                                     ${prods.slice(0,5).map(pr => `<div style="font-size:.7rem;color:#666;padding:1px 0">${pr.name||'—'} <span style="color:#aaa">×${pr.quantity||1}</span> <span style="color:#bbb">${pr.weight_kg?pr.weight_kg+'kg':''}</span></div>`).join('')}
                                     ${prods.length > 5 ? `<div style="font-size:.68rem;color:#bbb">+${prods.length-5} ürün daha</div>` : ''}
+                                </div>` : ''}
+                                ${has3D ? `<div style="margin-top:6px;text-align:center">
+                                    <canvas id="hist-pallet-3d-${pi}" width="460" height="200" style="width:100%;height:200px;border-radius:8px;background:#f0f2f8;cursor:grab"></canvas>
                                 </div>` : ''}
                             </div>`;
                         }).join('')}
@@ -9737,16 +10157,20 @@
                         <button onclick="closeHistoryDetail();openShipmentDetail('${data.id}')" style="background:#C84259;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:.75rem;font-weight:600;cursor:pointer">Detaylı Görüntüle</button>
                     </div>
                 `);
+                // Inline 3D palet görseli çiz (DOM'a eklendikten sonra)
+                setTimeout(() => _renderHistoryPallet3DAll(pallets), 100);
             }
 
             /* ── 5. Fotoğraflar ── */
-            const photos = (data.photos || []);
+            // API: [{id, filename, data}] veya local: ["data:image/..."]
+            const rawPhotos = (data.photos || []);
+            const photoUrls = rawPhotos.map(p => typeof p === 'string' ? p : p.data);
             let photosCard = '';
-            if (photos.length) {
+            if (photoUrls.length) {
                 photosCard = _card('Yükleme Fotoğrafları', 'images', `
                     <div style="display:flex;flex-wrap:wrap;gap:6px">
-                        ${photos.map((url, idx) => `
-                        <img src="${url}" onclick="openHistoryPhotoLightbox('${data.id}', ${idx})"
+                        ${photoUrls.map((url, idx) => `
+                        <img src="${url}" onclick="_openHistoryPhotoByUrl(${JSON.stringify(photoUrls).replace(/"/g,'&quot;')}, ${idx})"
                              style="width:76px;height:76px;object-fit:cover;border-radius:8px;cursor:pointer;border:2px solid #eee">`).join('')}
                     </div>
                 `);
@@ -11885,6 +12309,9 @@
             const data = window._sdCurrentData;
             if (!data) return;
 
+            // Cleanup previous 3D renderers
+            if (typeof _sdTruck3DCleanup !== 'undefined') { _sdTruck3DCleanup.forEach(fn => fn()); _sdTruck3DCleanup.length = 0; }
+
             switch(tabName) {
                 case 'overview': body.innerHTML = _sdTabOverview(data); break;
                 case 'pallets':  body.innerHTML = _sdTabPallets(data); break;
@@ -12084,8 +12511,24 @@
                             <td style="padding:6px 8px;color:#aaa;font-size:.72rem">${pr.pos_x!=null ? `x:${pr.pos_x} y:${pr.pos_y} z:${pr.pos_z}` : '—'}</td>
                         </tr>`).join('')}</tbody>
                     </table>` : '<div style="color:#bbb;font-size:.78rem;text-align:center;padding:12px">Ürün detayı bulunamadı</div>'}
+                    ${products.some(pr => pr.pos_x != null) ? `<div style="margin-top:10px">
+                        <canvas id="sd-pallet-3d-${i}" width="560" height="220" style="width:100%;height:220px;border-radius:10px;background:#f0f2f8;cursor:grab"></canvas>
+                    </div>` : ''}
                 </div>`;
             }).join('');
+
+            // Inline 3D render (DOM'a eklendikten sonra)
+            setTimeout(() => {
+                _histPallet3DCleanup.forEach(fn => fn());
+                _histPallet3DCleanup.length = 0;
+                pallets.forEach((p, pi) => {
+                    const canvas = document.getElementById(`sd-pallet-3d-${pi}`);
+                    if (!canvas) return;
+                    const prods = (p.products || []).filter(pr => pr.pos_x != null && pr.pos_y != null && pr.pos_z != null);
+                    if (!prods.length) return;
+                    _renderHistoryPallet3D(canvas, p, prods, pi);
+                });
+            }, 100);
 
             return html;
         }
@@ -12116,9 +12559,10 @@
             // Each vehicle card
             html += assignments.map((v, i) => {
                 const fillPct = Math.round(v.fill_rate_pct ?? v.fillRate ?? v.avg_fill_rate_pct ?? 0);
-                const palletCount = v.pallet_count ?? v.palletIds?.length ?? v.assigned_pallets?.length ?? 0;
-                const palletIds = v.palletIds || v.assigned_pallets || [];
+                const palletIds = v.pallet_ids || v.palletIds || v.assigned_pallets || [];
+                const palletCount = v.pallet_count ?? palletIds.length ?? 0;
                 const vehiclePallets = palletIds.length ? pallets.filter(p => palletIds.includes(p.id) || palletIds.includes(p.pallet_number)) : [];
+                const dims = (v.length_cm || v.length) && (v.width_cm || v.width) && (v.height_cm || v.height);
 
                 return `<div style="background:#fff;border-radius:14px;padding:18px;margin-bottom:12px;box-shadow:0 1px 6px rgba(0,0,0,.05);border-left:4px solid ${_fc(fillPct)}">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -12126,7 +12570,7 @@
                             <div style="width:42px;height:42px;background:${_fc(fillPct)}15;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem"><i class="bi bi-truck"></i></div>
                             <div>
                                 <div style="font-weight:700;color:#333;font-size:.92rem">Araç ${i+1} <span style="color:#888;font-weight:400;font-size:.78rem">${v.vehicle_name || v.name || v.type || ''}</span></div>
-                                <div style="font-size:.75rem;color:#888">${palletCount} palet ${v.cost ? `· ${Number(v.cost).toLocaleString('tr-TR')} ₺` : ''}</div>
+                                <div style="font-size:.75rem;color:#888">${palletCount} palet ${v.cost ? `· ${Number(v.cost).toLocaleString('tr-TR')} ₺` : ''}${dims ? ` · ${v.length_cm||v.length}×${v.width_cm||v.width}×${v.height_cm||v.height} cm` : ''}</div>
                             </div>
                         </div>
                         <div style="text-align:right">
@@ -12137,6 +12581,7 @@
                     <div style="background:#eee;border-radius:6px;height:10px;margin-bottom:10px">
                         <div style="background:${_fc(fillPct)};height:10px;border-radius:6px;width:${Math.min(fillPct,100)}%"></div>
                     </div>
+                    <canvas id="sd-truck-3d-${i}" style="width:100%;height:260px;border-radius:10px;background:#f0f2f8;cursor:grab;margin-bottom:10px"></canvas>
                     ${vehiclePallets.length ? `<div style="font-size:.72rem;font-weight:600;color:#888;margin-bottom:6px">YÜKLENMİŞ PALETLER:</div>
                     <div style="display:flex;flex-wrap:wrap;gap:6px">
                         ${vehiclePallets.map(p => {
@@ -12150,6 +12595,9 @@
                     </div>` : ''}
                 </div>`;
             }).join('');
+
+            // Trigger 3D rendering after DOM insertion
+            setTimeout(() => _renderShipmentTruck3DAll(assignments, pallets), 100);
 
             return html;
         }
@@ -12199,6 +12647,15 @@
             const _fc = p => p >= 75 ? '#1D9E75' : p >= 50 ? '#f59e0b' : '#E24B4A';
             const now = new Date().toLocaleString('tr-TR');
 
+            // 3D canvas'ları resme çevir (mevcutsa)
+            const pallet3DImages = {};
+            pallets.forEach((p, i) => {
+                const canvas = document.getElementById(`sd-pallet-3d-${i}`) || document.getElementById(`hist-pallet-3d-${i}`);
+                if (canvas) {
+                    try { pallet3DImages[i] = canvas.toDataURL('image/png'); } catch(e) { /* ignore */ }
+                }
+            });
+
             let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Palet Raporu — ${data.reference_no||''}</title>
             <style>body{font-family:'Segoe UI',sans-serif;padding:24px;color:#333;font-size:12px}
             h1{font-size:18px;margin-bottom:4px} h2{font-size:14px;margin:16px 0 8px;color:#555}
@@ -12227,7 +12684,7 @@
             html += `</tbody></table>`;
 
             // Detailed per-pallet
-            pallets.forEach(p => {
+            pallets.forEach((p, pi) => {
                 const fill = Math.round(p.fill_rate_pct||0);
                 const prods = p.products||[];
                 html += `<div class="pallet-card">
@@ -12246,6 +12703,12 @@
                     html += `</tbody></table>`;
                 } else {
                     html += `<div style="color:#999;padding:8px">Ürün detayı bulunamadı</div>`;
+                }
+                // 3D görsel (varsa)
+                if (pallet3DImages[pi]) {
+                    html += `<div style="text-align:center;margin-top:8px">
+                        <img src="${pallet3DImages[pi]}" style="max-width:100%;height:auto;border-radius:6px;border:1px solid #eee" alt="Palet ${p.pallet_number} 3D Görünüm">
+                    </div>`;
                 }
                 html += `</div>`;
             });
@@ -13137,6 +13600,43 @@
                 completed_at:   new Date().toISOString(),
                 products:       APP.state.products,
                 photos:         APP.state.shipmentPhotos.slice(),
+                pallets:        APP.state.pallets.map(p => ({
+                    pallet_number: p.id,
+                    pallet_type:   p.type || APP.state.selectedPalletType || 'euro',
+                    fill_rate_pct: p.placedItems?.length ? Math.round((p.placedItems.reduce((s,it) => s + (it.dx||0)*(it.dy||0)*(it.dz||0), 0) / ((APP.config.palletTypes[p.type||'euro']?.length||120)*(APP.config.palletTypes[p.type||'euro']?.width||80)*(APP.config.palletTypes[p.type||'euro']?.maxHeight||180))) * 100) : 0,
+                    total_weight_kg: p.totalWeight || 0,
+                    total_height_cm: p.totalHeight || 0,
+                    total_volume_m3: p.totalVolume || 0,
+                    constraints: p.constraints || [],
+                    products: (p.placedItems || p.products || []).map(it => ({
+                        name: it.name, quantity: it.quantity || 1,
+                        length_cm: it.dy || it.length || 0, width_cm: it.dx || it.width || 0,
+                        height_cm: it.dz || it.height || 0, weight_kg: it.weight || 0,
+                        pos_x: it.x ?? it.pos_x ?? null, pos_y: it.y ?? it.pos_y ?? null, pos_z: it.z ?? it.pos_z ?? null,
+                    })),
+                })),
+                selected_scenario: sc ? {
+                    id:                sc.id || null,
+                    name:              sc.name || sc.strategy || '',
+                    strategy:          sc.strategy || '',
+                    total_cost:        sc.totalCost || 0,
+                    total_vehicles:    sc.totalVehicles || 0,
+                    avg_fill_rate_pct: sc.avgFillRate || sc.avg_fill_rate_pct || 0,
+                    vehicle_assignments: (sc.vehicles || sc.vehicleAssignments || sc.vehicle_assignments || []).map(v => ({
+                        vehicle_id:       v.id || v.vehicle_id || null,
+                        vehicle_name:     v.name || v.vehicle_name || '',
+                        vehicle_type:     v.type || v.vehicle_type || '',
+                        length_cm:        v.length || v.length_cm || 1360,
+                        width_cm:         v.width || v.width_cm || 245,
+                        height_cm:        v.height || v.height_cm || 270,
+                        max_weight_kg:    v.maxWeight || v.max_weight_kg || 24000,
+                        pallet_ids:       v.assignedPallets || v.pallet_ids || [],
+                        pallet_count:     (v.assignedPallets || v.pallet_ids || []).length,
+                        fill_rate_pct:    v.fillRate || v.fill_rate_pct || 0,
+                        cost:             v.costs?.total || v.cost || 0,
+                        current_weight_kg: v.currentWeight || v.current_weight_kg || 0,
+                    })),
+                } : null,
             };
 
             APP.state.completedShipments.push(record);
@@ -13151,7 +13651,9 @@
                     const result = await API.post(`/shipments/${APP.state.shipmentId}/complete`, {
                         notes,
                         load_date: loadDate,
-                        order_ids: activeIds
+                        order_ids: activeIds,
+                        photos: APP.state.shipmentPhotos.slice(),
+                        selected_scenario: record.selected_scenario || null,
                     });
                     // API'den gelen doğru referans numarasını kullan
                     if (result.reference_no) {

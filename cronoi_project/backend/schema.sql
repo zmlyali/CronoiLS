@@ -218,6 +218,22 @@ CREATE TABLE pallet_products (
 CREATE INDEX idx_pallet_products_pallet ON pallet_products(pallet_id);
 
 -- ============================================================
+-- SHIPMENT PHOTOS (yükleme fotoğrafları)
+-- ============================================================
+
+CREATE TABLE shipment_photos (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    shipment_id     UUID NOT NULL REFERENCES shipments(id) ON DELETE CASCADE,
+    filename        TEXT NOT NULL,
+    mime_type       TEXT NOT NULL DEFAULT 'image/jpeg',
+    data            TEXT NOT NULL,                           -- base64 encoded
+    sort_order      INT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_shipment_photos_shipment ON shipment_photos(shipment_id);
+
+-- ============================================================
 -- SCENARIOS (senaryo karşılaştırma sonuçları)
 -- ============================================================
 

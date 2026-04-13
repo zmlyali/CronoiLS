@@ -17,7 +17,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
-from app.models import Shipment, ShipmentProduct, Pallet, PalletProduct, Scenario, OrderShipment, Order, OrderItem
+from app.models import Shipment, ShipmentProduct, Pallet, PalletProduct, Scenario, OrderShipment, Order, OrderItem, ShipmentPhoto
 
 router = APIRouter()
 
@@ -370,12 +370,40 @@ async def get_shipment(
     order_rows = order_result.unique().all()
 
     # Seçilen senaryo çek (TIR doluluk oranı için)
+    # Önce is_selected=True, sonra is_recommended=True, sonra herhangi biri
     scenario_result = await db.execute(
         select(Scenario)
         .where(Scenario.shipment_id == shipment_id, Scenario.is_selected == True)
         .limit(1)
     )
     selected_scenario = scenario_result.scalar_one_or_none()
+
+    if not selected_scenario:
+        # Fallback: is_recommended olanı dene
+        rec_result = await db.execute(
+            select(Scenario)
+            .where(Scenario.shipment_id == shipment_id, Scenario.is_recommended == True)
+            .limit(1)
+        )
+        selected_scenario = rec_result.scalar_one_or_none()
+
+    if not selected_scenario:
+        # Fallback: herhangi bir senaryoyu al
+        any_result = await db.execute(
+            select(Scenario)
+            .where(Scenario.shipment_id == shipment_id)
+            .order_by(Scenario.created_at)
+            .limit(1)
+        )
+        selected_scenario = any_result.scalar_one_or_none()
+
+    # Fotoğrafları çek
+    photo_result = await db.execute(
+        select(ShipmentPhoto)
+        .where(ShipmentPhoto.shipment_id == shipment_id)
+        .order_by(ShipmentPhoto.sort_order)
+    )
+    photos = photo_result.scalars().all()
 
     avg_pallet_fill = (
         round(sum(p.fill_rate_pct for p in pallets) / len(pallets), 1)
@@ -394,6 +422,14 @@ async def get_shipment(
         "loaded_at":         shipment.loaded_at,
         "delivered_at":      shipment.delivered_at,
         "avg_fill_rate_pct": avg_pallet_fill,
+        "photos": [
+            {
+                "id":       ph.id,
+                "filename": ph.filename,
+                "data":     ph.data,
+            }
+            for ph in photos
+        ],
         "orders": [
             {
                 "id":                 row.Order.id,
@@ -939,6 +975,40 @@ async def complete_shipment(
     if payload.get("notes"):
         shipment.notes = payload["notes"]
 
+    # Seçili senaryo yoksa, mevcut senaryolardan birini otomatik seç
+    selected_check = await db.execute(
+        select(Scenario).where(
+            Scenario.shipment_id == shipment_id,
+            Scenario.is_selected == True
+        ).limit(1)
+    )
+    if not selected_check.scalar_one_or_none():
+        # Recommended veya ilk senaryoyu seç
+        fallback = await db.execute(
+            select(Scenario).where(Scenario.shipment_id == shipment_id)
+            .order_by(Scenario.created_at).limit(1)
+        )
+        fallback_scenario = fallback.scalar_one_or_none()
+        if fallback_scenario:
+            fallback_scenario.is_selected = True
+        elif payload.get("selected_scenario"):
+            # DB'de hiç senaryo yok — frontend'den gelen veriyle oluştur
+            sc_data = payload["selected_scenario"]
+            new_scenario = Scenario(
+                id=str(uuid4()),
+                shipment_id=shipment_id,
+                name=sc_data.get("name", "Araç Planı"),
+                strategy=sc_data.get("strategy", "manual"),
+                total_cost=sc_data.get("total_cost", 0),
+                cost_per_pallet=sc_data.get("cost_per_pallet", 0),
+                total_vehicles=sc_data.get("total_vehicles", 0),
+                avg_fill_rate_pct=sc_data.get("avg_fill_rate_pct", 0),
+                is_recommended=True,
+                is_selected=True,
+                vehicle_assignments=sc_data.get("vehicle_assignments", []),
+            )
+            db.add(new_scenario)
+
     # Bağlı siparislerin statüsünü güncelle
     order_ids = payload.get("order_ids", [])
     updated_orders = []
@@ -964,6 +1034,19 @@ async def complete_shipment(
                 )
                 if not existing.scalar_one_or_none():
                     db.add(OrderShipment(order_id=oid, shipment_id=shipment_id))
+
+    # Fotoğrafları kaydet (base64 data URL'ler)
+    photos_data = payload.get("photos", [])
+    for idx, photo_url in enumerate(photos_data):
+        if not isinstance(photo_url, str) or not photo_url.startswith("data:"):
+            continue
+        db.add(ShipmentPhoto(
+            shipment_id=shipment_id,
+            filename=f"photo_{idx+1}.jpg",
+            mime_type="image/jpeg",
+            data=photo_url,
+            sort_order=idx,
+        ))
 
     await db.commit()
 
