@@ -1,12 +1,15 @@
 Backendi çalıştırmak için 
 
---cd C:\PROJECTS\cronoi_project\cronoi_project\backend
-venv\Scripts\activate
-
---uvicorn app.main:app --reload --port 8000
+-- Herhangi bir terminalden (cd gerekmez):
+C:\PROJECTS\cronoi_project\cronoi_project\backend\venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000 --app-dir C:\PROJECTS\cronoi_project\cronoi_project\backend
 
 Backendi durdurmak için 
 --control + C 
+
+Şifre sıfırlamak için (admin CLI)
+
+--cd C:\PROJECTS\cronoi_project\cronoi_project\backend
+.\venv\Scripts\python.exe reset_password.py --email "kullanici@firma.com" --password "YeniSifre123!"
 
 Git e pushlamak için 
 ---"c:\PROJECTS\cronoi_project\cronoi_project"; git status

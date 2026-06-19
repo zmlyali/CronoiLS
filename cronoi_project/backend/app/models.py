@@ -31,6 +31,8 @@ class Company(Base):
     monthly_quota   = Column(Integer, nullable=False, default=5)
     used_quota      = Column(Integer, nullable=False, default=0)
     settings        = Column(JSONB, nullable=False, default=dict)
+    plan_expires_at = Column(DateTime(timezone=True))
+    user_seats      = Column(Integer, nullable=False, default=3)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -51,10 +53,23 @@ class User(Base):
     full_name       = Column(String(200), nullable=False)
     role            = Column(String(20), nullable=False, default="operator")
     is_active       = Column(Boolean, nullable=False, default=True)
+    is_system_admin = Column(Boolean, nullable=False, default=False)
     last_login_at   = Column(DateTime(timezone=True))
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
 
     company         = relationship("Company", back_populates="users")
+    refresh_tokens  = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id          = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    user_id     = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash  = Column(String(64), unique=True, nullable=False)
+    expires_at  = Column(DateTime(timezone=True), nullable=False)
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+    user        = relationship("User", back_populates="refresh_tokens")
 
 
 class Shipment(Base):
@@ -290,12 +305,16 @@ class Order(Base):
     status               = Column(String(30), nullable=False, default="pending")
     notes                = Column(Text)
     priority             = Column(Integer, nullable=False, default=3)
+    order_type           = Column(String(20), nullable=False, default="standard")
+    allowed_vehicle_types = Column(JSONB, nullable=False, default=list)
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at           = Column(DateTime(timezone=True))
 
-    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
-    shipment_links = relationship("OrderShipment", backref="order", cascade="all, delete-orphan")
+    items          = relationship("OrderItem",         back_populates="order",  cascade="all, delete-orphan")
+    pallet_groups  = relationship("OrderPalletGroup",  back_populates="order",  cascade="all, delete-orphan",
+                                  order_by="OrderPalletGroup.sort_order")
+    shipment_links = relationship("OrderShipment",     backref="order",         cascade="all, delete-orphan")
 
 
 class OrderItem(Base):
@@ -311,10 +330,49 @@ class OrderItem(Base):
     height_cm   = Column(Float, nullable=False)
     weight_kg   = Column(Float, nullable=False)
     constraints = Column(JSONB, nullable=False, default=list)
+    pallet_type = Column(String(30), nullable=True)
     sort_order  = Column(Integer, nullable=False, default=0)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
 
     order = relationship("Order", back_populates="items")
+
+
+class OrderPalletGroup(Base):
+    """Pre-pack siparişlerde müşteri tarafından tanımlanmış palet grubu.
+    Bir grup = belirli boyut/ağırlıktaki N adet özdeş palet."""
+    __tablename__ = "order_pallet_groups"
+    id           = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    order_id     = Column(UUID(as_uuid=False), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    pallet_code  = Column(String(50),  nullable=False)   # Excel'deki PALET_ID
+    name         = Column(String(200), nullable=True)
+    width_cm     = Column(Float, nullable=False)
+    length_cm    = Column(Float, nullable=False)
+    height_cm    = Column(Float, nullable=False)
+    weight_kg    = Column(Float, nullable=False)          # palet başına ağırlık
+    pallet_count = Column(Integer, nullable=False, default=1)
+    stackable    = Column(Boolean, nullable=False, default=True)   # üst üste konabilir mi (optimizasyonda istif)
+    sort_order   = Column(Integer, nullable=False, default=0)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at   = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    order = relationship("Order", back_populates="pallet_groups")
+    items = relationship("OrderPalletItem", back_populates="pallet_group",
+                         cascade="all, delete-orphan", order_by="OrderPalletItem.sort_order")
+
+
+class OrderPalletItem(Base):
+    """Pre-pack palet grubundaki ürün satırı."""
+    __tablename__ = "order_pallet_items"
+    id                  = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    pallet_group_id     = Column(UUID(as_uuid=False), ForeignKey("order_pallet_groups.id", ondelete="CASCADE"), nullable=False)
+    product_code        = Column(String(100), nullable=True)
+    description         = Column(String(300), nullable=False)
+    quantity_per_pallet = Column(Integer, nullable=False)
+    total_quantity      = Column(Integer, nullable=True)   # qty_per_pallet × pallet_count (bilgi amaçlı)
+    sort_order          = Column(Integer, nullable=False, default=0)
+    created_at          = Column(DateTime(timezone=True), server_default=func.now())
+
+    pallet_group = relationship("OrderPalletGroup", back_populates="items")
 
 
 class ShipmentPhoto(Base):

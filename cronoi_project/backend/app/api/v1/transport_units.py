@@ -11,11 +11,10 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 from app.core.database import get_db
-from app.models import PalletDefinition, VehicleDefinition, Company
+from app.core.auth import get_current_active_user
+from app.models import PalletDefinition, VehicleDefinition, Company, User
 
 router = APIRouter()
-
-DEMO_COMPANY_ID = "00000000-0000-0000-0000-000000000001"
 
 # ════════════════════════════════════════════════════════════════
 # SEED DATA — Gerçek lojistik değerleri
@@ -198,16 +197,17 @@ class VehicleDefUpdate(BaseModel):
 # ════════════════════════════════════════════════════════════════
 
 @router.post("/seed", summary="Seed default pallet & vehicle definitions")
-async def seed_defaults(db: AsyncSession = Depends(get_db)):
+async def seed_defaults(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """Boş firmaya varsayılan palet ve araç tipleri ekler."""
-    company_id = DEMO_COMPANY_ID
+    company_id = current_user.company_id
 
-    # Company yoksa oluştur
+    # Company veriş
     company = await db.get(Company, company_id)
     if not company:
-        company = Company(id=company_id, name="Demo Şirket", slug="demo", plan="growth", monthly_quota=999)
-        db.add(company)
-        await db.flush()
+        raise HTTPException(404, "Firma bulunamadı")
 
     # Palet seed
     existing_pallets = (await db.execute(
@@ -259,10 +259,11 @@ async def seed_defaults(db: AsyncSession = Depends(get_db)):
 @router.get("/pallets", response_model=List[PalletDefOut])
 async def list_pallet_definitions(
     active_only: bool = False,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     q = select(PalletDefinition).where(
-        PalletDefinition.company_id == DEMO_COMPANY_ID
+        PalletDefinition.company_id == current_user.company_id
     ).order_by(PalletDefinition.sort_order, PalletDefinition.name)
     if active_only:
         q = q.where(PalletDefinition.is_active == True)
@@ -273,12 +274,13 @@ async def list_pallet_definitions(
 @router.post("/pallets", response_model=PalletDefOut, status_code=201)
 async def create_pallet_definition(
     body: PalletDefCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     # Code uniqueness
     existing = (await db.execute(
         select(PalletDefinition).where(
-            PalletDefinition.company_id == DEMO_COMPANY_ID,
+            PalletDefinition.company_id == current_user.company_id,
             PalletDefinition.code == body.code
         )
     )).scalar_one_or_none()
@@ -286,7 +288,7 @@ async def create_pallet_definition(
         raise HTTPException(400, f"'{body.code}' kodu zaten mevcut")
 
     pd = PalletDefinition(
-        company_id=DEMO_COMPANY_ID,
+        company_id=current_user.company_id,
         usable_area_m2=round(body.length_cm * body.width_cm / 10000, 3),
         **body.model_dump()
     )
@@ -300,10 +302,11 @@ async def create_pallet_definition(
 async def update_pallet_definition(
     pallet_def_id: str,
     body: PalletDefUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     pd = await db.get(PalletDefinition, pallet_def_id)
-    if not pd or pd.company_id != DEMO_COMPANY_ID:
+    if not pd or pd.company_id != current_user.company_id:
         raise HTTPException(404, "Palet tipi bulunamadı")
 
     data = body.model_dump(exclude_unset=True)
@@ -322,10 +325,11 @@ async def update_pallet_definition(
 @router.delete("/pallets/{pallet_def_id}")
 async def delete_pallet_definition(
     pallet_def_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     pd = await db.get(PalletDefinition, pallet_def_id)
-    if not pd or pd.company_id != DEMO_COMPANY_ID:
+    if not pd or pd.company_id != current_user.company_id:
         raise HTTPException(404, "Palet tipi bulunamadı")
     if pd.is_system_default:
         raise HTTPException(400, "Sistem varsayılan palet tipi silinemez. Pasife alabilirsiniz.")
@@ -341,10 +345,11 @@ async def delete_pallet_definition(
 @router.get("/vehicles", response_model=List[VehicleDefOut])
 async def list_vehicle_definitions(
     active_only: bool = False,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     q = select(VehicleDefinition).where(
-        VehicleDefinition.company_id == DEMO_COMPANY_ID
+        VehicleDefinition.company_id == current_user.company_id
     ).order_by(VehicleDefinition.sort_order, VehicleDefinition.name)
     if active_only:
         q = q.where(VehicleDefinition.is_active == True)
@@ -355,11 +360,12 @@ async def list_vehicle_definitions(
 @router.post("/vehicles", response_model=VehicleDefOut, status_code=201)
 async def create_vehicle_definition(
     body: VehicleDefCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     existing = (await db.execute(
         select(VehicleDefinition).where(
-            VehicleDefinition.company_id == DEMO_COMPANY_ID,
+            VehicleDefinition.company_id == current_user.company_id,
             VehicleDefinition.code == body.code
         )
     )).scalar_one_or_none()
@@ -367,7 +373,7 @@ async def create_vehicle_definition(
         raise HTTPException(400, f"'{body.code}' kodu zaten mevcut")
 
     vd = VehicleDefinition(
-        company_id=DEMO_COMPANY_ID,
+        company_id=current_user.company_id,
         **body.model_dump()
     )
     db.add(vd)
@@ -380,10 +386,11 @@ async def create_vehicle_definition(
 async def update_vehicle_definition(
     vehicle_def_id: str,
     body: VehicleDefUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     vd = await db.get(VehicleDefinition, vehicle_def_id)
-    if not vd or vd.company_id != DEMO_COMPANY_ID:
+    if not vd or vd.company_id != current_user.company_id:
         raise HTTPException(404, "Araç tipi bulunamadı")
 
     data = body.model_dump(exclude_unset=True)
@@ -398,10 +405,11 @@ async def update_vehicle_definition(
 @router.delete("/vehicles/{vehicle_def_id}")
 async def delete_vehicle_definition(
     vehicle_def_id: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     vd = await db.get(VehicleDefinition, vehicle_def_id)
-    if not vd or vd.company_id != DEMO_COMPANY_ID:
+    if not vd or vd.company_id != current_user.company_id:
         raise HTTPException(404, "Araç tipi bulunamadı")
     if vd.is_system_default:
         raise HTTPException(400, "Sistem varsayılan araç tipi silinemez. Pasife alabilirsiniz.")
@@ -415,9 +423,13 @@ async def delete_vehicle_definition(
 # ════════════════════════════════════════════════════════════════
 
 @router.patch("/pallets/{pallet_def_id}/toggle")
-async def toggle_pallet_active(pallet_def_id: str, db: AsyncSession = Depends(get_db)):
+async def toggle_pallet_active(
+    pallet_def_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     pd = await db.get(PalletDefinition, pallet_def_id)
-    if not pd or pd.company_id != DEMO_COMPANY_ID:
+    if not pd or pd.company_id != current_user.company_id:
         raise HTTPException(404, "Palet tipi bulunamadı")
     pd.is_active = not pd.is_active
     await db.commit()
@@ -425,9 +437,13 @@ async def toggle_pallet_active(pallet_def_id: str, db: AsyncSession = Depends(ge
 
 
 @router.patch("/vehicles/{vehicle_def_id}/toggle")
-async def toggle_vehicle_active(vehicle_def_id: str, db: AsyncSession = Depends(get_db)):
+async def toggle_vehicle_active(
+    vehicle_def_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     vd = await db.get(VehicleDefinition, vehicle_def_id)
-    if not vd or vd.company_id != DEMO_COMPANY_ID:
+    if not vd or vd.company_id != current_user.company_id:
         raise HTTPException(404, "Araç tipi bulunamadı")
     vd.is_active = not vd.is_active
     await db.commit()

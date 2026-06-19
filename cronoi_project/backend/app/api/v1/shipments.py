@@ -17,14 +17,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
-from app.models import Shipment, ShipmentProduct, Pallet, PalletProduct, Scenario, OrderShipment, Order, OrderItem, ShipmentPhoto
+from app.core.auth import get_current_active_user
+from app.models import Shipment, ShipmentProduct, Pallet, PalletProduct, Scenario, OrderShipment, Order, OrderItem, OrderPalletGroup, ShipmentPhoto, User
 
 router = APIRouter()
-
-
-# ── Geçici company_id (auth yokken sabit) ───────────────────────
-DEMO_COMPANY_ID = "00000000-0000-0000-0000-000000000001"
-DEMO_USER_ID    = "00000000-0000-0000-0000-000000000002"
 
 # Optimizasyon durumunu RAM'de tut (Redis olmadığı için)
 _opt_status: dict = {}
@@ -200,29 +196,15 @@ async def _save_pallets(db: AsyncSession, shipment_id: str, pallets_data: list):
 async def create_shipment(
     payload: ShipmentCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Yeni sevkiyat oluştur ve ürünleri kaydet."""
-
-    # Şirketi kontrol et / demo için oluştur
-    from app.models import Company
-    company = await db.get(Company, DEMO_COMPANY_ID)
-    if not company:
-        company = Company(
-            id=DEMO_COMPANY_ID,
-            name="Demo Şirketi",
-            slug="demo",
-            plan="growth",
-            monthly_quota=100,
-        )
-        db.add(company)
-        await db.flush()
-
     ref_no = await _next_reference_no(db)
 
     shipment = Shipment(
         id=str(uuid4()),
-        company_id=DEMO_COMPANY_ID,
-        created_by=DEMO_USER_ID,
+        company_id=current_user.company_id,
+        created_by=current_user.id,
         reference_no=ref_no,
         status="draft",
         pallet_type=payload.pallet_type,
@@ -272,9 +254,10 @@ async def list_shipments(
     offset: int = 0,
     include_deleted: bool = False,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Tüm sevkiyatları listele (en yeni önce) — palet doluluk oranı dahil."""
-    base_filter = [Shipment.company_id == DEMO_COMPANY_ID]
+    base_filter = [Shipment.company_id == current_user.company_id]
     if include_deleted:
         base_filter.append(Shipment.deleted_at.isnot(None))
     else:
@@ -365,7 +348,11 @@ async def get_shipment(
         .outerjoin(item_count_sq, item_count_sq.c.order_id == Order.id)
         .where(OrderShipment.shipment_id == shipment_id)
         .where(Order.deleted_at.is_(None))
-        .options(selectinload(Order.items))
+        .options(
+            selectinload(Order.items),
+            # Pre-pack: palet grupları + içerikleri (frontend zemin-aware optimizasyon için kurar)
+            selectinload(Order.pallet_groups).selectinload(OrderPalletGroup.items),
+        )
     )
     order_rows = order_result.unique().all()
 
@@ -441,6 +428,7 @@ async def get_shipment(
                 "contact_name":       row.Order.contact_name,
                 "contact_phone":      row.Order.contact_phone,
                 "status":             row.Order.status,
+                "order_type":         row.Order.order_type,
                 "requested_ship_date":row.Order.requested_ship_date,
                 "item_count":         row.item_count or 0,
                 "items": [
@@ -454,6 +442,31 @@ async def get_shipment(
                         "weight_kg":  item.weight_kg,
                     }
                     for item in (row.Order.items or [])
+                ],
+                # Pre-pack palet grupları — frontend _buildPalletsFromPalletGroups bunları
+                # source='prepack' + stackable + footprint'li paletlere çevirir (zemin-aware fleet).
+                "pallet_groups": [
+                    {
+                        "id":           grp.id,
+                        "pallet_code":  grp.pallet_code,
+                        "name":         grp.name,
+                        "width_cm":     grp.width_cm,
+                        "length_cm":    grp.length_cm,
+                        "height_cm":    grp.height_cm,
+                        "weight_kg":    grp.weight_kg,
+                        "pallet_count": grp.pallet_count,
+                        "stackable":    grp.stackable,
+                        "sort_order":   grp.sort_order,
+                        "items": [
+                            {
+                                "product_code":        it.product_code,
+                                "description":         it.description,
+                                "quantity_per_pallet": it.quantity_per_pallet,
+                            }
+                            for it in (grp.items or [])
+                        ],
+                    }
+                    for grp in (row.Order.pallet_groups or [])
                 ],
             }
             for row in order_rows
@@ -883,9 +896,49 @@ async def get_pallets(
             "constraints":     p.constraints or [],
             "products":        products,
             "stability":       (p.layout_data or {}).get("stability"),
+            # Manuel 3D düzenleme sonucu (varsa) → frontend doğrudan kullanır
+            "placed_items":    (p.layout_data or {}).get("placed_items"),
+            "manual_edited":   (p.layout_data or {}).get("manual_edited", False),
         })
 
     return {"pallets": pallet_list, "total": len(pallet_list)}
+
+
+class PalletLayoutUpdate(BaseModel):
+    placed_items: list = Field(default_factory=list)
+    total_height_cm: Optional[float] = None
+
+
+@router.patch("/{shipment_id}/pallets/{pallet_number}")
+async def update_pallet_layout(
+    shipment_id: str,
+    pallet_number: int,
+    payload: PalletLayoutUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Tek bir paletin manuel 3D ürün yerleşimini kalıcılaştır (layout_data.placed_items)."""
+    shipment = await db.get(Shipment, shipment_id)
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Sevkiyat bulunamadı")
+
+    result = await db.execute(
+        select(Pallet).where(
+            Pallet.shipment_id == shipment_id,
+            Pallet.pallet_number == pallet_number,
+        )
+    )
+    pallet = result.scalar_one_or_none()
+    if not pallet:
+        raise HTTPException(status_code=404, detail="Palet bulunamadı")
+
+    ld = dict(pallet.layout_data or {})
+    ld["placed_items"] = payload.placed_items
+    ld["manual_edited"] = True
+    pallet.layout_data = ld
+    if payload.total_height_cm is not None:
+        pallet.total_height_cm = payload.total_height_cm
+    await db.commit()
+    return {"updated": True, "pallet_number": pallet_number, "items": len(payload.placed_items)}
 
 
 @router.post("/{shipment_id}/pallets", status_code=status.HTTP_201_CREATED)
@@ -1106,6 +1159,7 @@ async def update_shipment_status(
 @router.get("/reports/weekly-summary")
 async def weekly_summary_report(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Araç planlaması yapılmış (vehicle_planned) siparişler için haftalık özet:
@@ -1116,7 +1170,7 @@ async def weekly_summary_report(
     shipment_result = await db.execute(
         select(Shipment)
         .where(
-            Shipment.company_id == DEMO_COMPANY_ID,
+            Shipment.company_id == current_user.company_id,
             Shipment.deleted_at.is_(None),
             Shipment.status.in_(["plan_confirmed", "loading", "optimized", "loaded"]),
         )

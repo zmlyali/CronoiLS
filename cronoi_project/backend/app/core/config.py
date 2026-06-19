@@ -2,8 +2,12 @@
 Cronoi LS — Core Configuration
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from typing import List, Optional
+
+# config.py'nin bulunduğu yer: backend/app/core/ → .parent.parent.parent = backend/
+_ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -40,7 +44,7 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
 
     class Config:
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
         extra = "ignore"
 
 

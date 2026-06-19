@@ -13,8 +13,11 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 
 from app.core.database import get_db
-from app.models import Shipment, Scenario
+from app.core.auth import get_current_active_user
+from app.models import Shipment, Scenario, User
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -22,6 +25,7 @@ class VehicleConfigSchema(BaseModel):
     id: str
     name: str
     type: str
+    code: str = ""          # araç tipi kodu (konteyner40 vb.) — allowed_vehicle_types eşleşmesi için
     length_cm: float = 1360
     width_cm: float = 245
     height_cm: float = 270
@@ -49,6 +53,9 @@ class ScenarioGenerateRequest(BaseModel):
     shipment_id: str
     vehicle_configs: List[VehicleConfigSchema]
     engine_params: Optional[EngineParamsSchema] = None
+    # Sipariş araç-tipi kısıtı (allowed_vehicle_types kesişimi). Doluysa SADECE bu tipler
+    # değerlendirilir (HARD filtre). Boş = serbest.
+    allowed_vehicle_types: List[str] = []
 
     class Config:
         json_schema_extra = {
@@ -68,6 +75,7 @@ class ScenarioGenerateRequest(BaseModel):
 async def generate_scenarios(
     payload: ScenarioGenerateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """3 farklı strateji için senaryo hesapla ve DB'ye kaydet (ScenarioOptimizer ile)."""
     from app.services.optimizer import (
@@ -76,9 +84,9 @@ async def generate_scenarios(
     )
     from app.models import Pallet
 
-    # Sevkiyatı kontrol et
+    # Sevkiyatı kontrol et — sadece kendi firmasının sevkiyatları
     shipment = await db.get(Shipment, payload.shipment_id)
-    if not shipment:
+    if not shipment or (not current_user.is_system_admin and shipment.company_id != current_user.company_id):
         raise HTTPException(status_code=404, detail="Sevkiyat bulunamadı")
 
     # Paletleri al
@@ -102,9 +110,29 @@ async def generate_scenarios(
             constraints=p.constraints or [],
         ))
 
+    # ── SİPARİŞ ARAÇ-TİPİ KISITI (HARD FİLTRE + CROSS-CHECK) ──────────────────
+    # Sipariş "40'lık konteyner" diyorsa optimizer SADECE konteyner40 değerlendirmeli.
+    # Eşleşme: önce code (konteyner40), sonra id/type. İzinli yoksa NET hata (sessizce
+    # yanlış araç seçilmesin — kullanıcı talebi: robust, cross-check).
+    allowed = {str(a).strip() for a in (payload.allowed_vehicle_types or []) if str(a).strip()}
+    vehicle_configs = payload.vehicle_configs
+    if allowed:
+        def _vc_allowed(vc) -> bool:
+            return (vc.code and vc.code in allowed) or (vc.id in allowed) or (vc.type in allowed)
+        filtered = [vc for vc in vehicle_configs if _vc_allowed(vc)]
+        if not filtered:
+            raise HTTPException(
+                status_code=400,
+                detail=("Sipariş araç-tipi kısıtı (" + ", ".join(sorted(allowed)) +
+                        ") için filoda uygun araç tanımı yok. Araçlar ekranından bu tipi ekleyin."),
+            )
+        logger.info("[Scenarios] Araç kısıtı uygulandı: %d→%d araç (izinli: %s)",
+                    len(vehicle_configs), len(filtered), ", ".join(sorted(allowed)))
+        vehicle_configs = filtered
+
     # Araç tanımlarını optimizer formatına çevir
     opt_vehicles = []
-    for vc in payload.vehicle_configs:
+    for vc in vehicle_configs:
         opt_vehicles.append(OptVehicleConfig(
             id=vc.id, name=vc.name, type=vc.type,
             length_cm=vc.length_cm, width_cm=vc.width_cm, height_cm=vc.height_cm,
@@ -263,7 +291,13 @@ async def select_scenario(
 async def get_scenarios(
     shipment_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
+    # Tenant isolation check
+    shipment = await db.get(Shipment, shipment_id)
+    if not shipment or (not current_user.is_system_admin and shipment.company_id != current_user.company_id):
+        raise HTTPException(status_code=404, detail="Sevkiyat bulunamadı")
+
     result = await db.execute(
         select(Scenario)
         .where(Scenario.shipment_id == shipment_id)

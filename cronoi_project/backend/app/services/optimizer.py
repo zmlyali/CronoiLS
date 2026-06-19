@@ -128,6 +128,10 @@ class OptimizerSettings:
     height_safety_margin_cm: float = 0.0
     pallet_gap_cm: float = 3.0
     enforce_constraints: bool = True
+    # Stabilite: istiflenen kutu tabanının min destek oranı (% — altı boşsa devrilir/kayar)
+    min_support_ratio_pct: float = 70.0
+    # Birim yük: aynı ürünü aynı palete grupla → tek-ürün, düz tepeli, tıra istiflenebilir paletler
+    group_same_products: bool = False
 
     @classmethod
     def from_dict(cls, d: dict) -> "OptimizerSettings":
@@ -161,6 +165,8 @@ class OptimizerSettings:
             height_safety_margin_cm=float(d.get("heightSafetyMargin", d.get("height_safety_margin_cm", 0))),
             pallet_gap_cm=float(d.get("palletGapCm", d.get("pallet_gap_cm", 3))),
             enforce_constraints=bool(d.get("enforceConstraints", d.get("enforce_constraints", True))),
+            min_support_ratio_pct=float(d.get("minSupportRatioPct", d.get("min_support_ratio_pct", 70.0))),
+            group_same_products=bool(d.get("groupSameProducts", d.get("group_same_products", False))),
         )
 
 
@@ -186,6 +192,8 @@ class OptimizationParams:
     enforce_ispm15: bool = False
     reefer_ceiling_clearance_cm: float = 22.0
     reefer_door_clearance_cm: float = 11.0
+    min_support_ratio_pct: float = 70.0
+    group_same_products: bool = False
 
     @classmethod
     def from_dict(cls, d: dict) -> "OptimizationParams":
@@ -218,6 +226,8 @@ class OptimizationParams:
             enforce_ispm15=bool(d.get("enforceIspm15", d.get("enforce_ispm15", False))),
             reefer_ceiling_clearance_cm=float(d.get("reeferCeilingClearanceCm", d.get("reefer_ceiling_clearance_cm", 22.0))),
             reefer_door_clearance_cm=float(d.get("reeferDoorClearanceCm", d.get("reefer_door_clearance_cm", 11.0))),
+            min_support_ratio_pct=float(d.get("minSupportRatioPct", d.get("min_support_ratio_pct", 70.0))),
+            group_same_products=bool(d.get("groupSameProducts", d.get("group_same_products", False))),
         )
 
     def to_settings(self) -> OptimizerSettings:
@@ -239,6 +249,8 @@ class OptimizationParams:
             height_safety_margin_cm=self.height_safety_margin_cm,
             pallet_gap_cm=self.pallet_gap_cm,
             enforce_constraints=self.enforce_constraints,
+            min_support_ratio_pct=self.min_support_ratio_pct,
+            group_same_products=self.group_same_products,
         )
 
 
@@ -760,7 +772,183 @@ class BinPackingOptimizer3D:
                     max_top = top
         return max_top
 
+    def _support_ratio(self, pallet: OptimizedPallet,
+                       x: float, z: float, pl: float, pw: float, base_y: float) -> float:
+        """İstiflenen kutu tabanının ALTTAKİ kutularca desteklenen kesri (0-1).
+        base_y kotunda biten tepe yüzeylerin XZ kesişim alanı / taban alanı.
+        Zeminde (base_y≈0) palet güvertesi tam destek → 1. Stabilite kapısı bunu kullanır:
+        altı yeterince dolu değilse kutu havada/dengesiz durur (tır hareketinde kayar/devrilir)."""
+        if base_y < 0.5:
+            return 1.0
+        area = pl * pw
+        if area <= 0:
+            return 0.0
+        x2, z2 = x + pl, z + pw
+        supported = 0.0
+        for r in pallet.layout_data.get("placed_rects", []):
+            if abs((r["y"] + r["h"]) - base_y) > 0.5:   # sadece tam altta biten yüzeyler
+                continue
+            ox = max(0.0, min(x2, r["x"] + r["l"]) - max(x, r["x"]))
+            oz = max(0.0, min(z2, r["z"] + r["w"]) - max(z, r["z"]))
+            supported += ox * oz
+        return min(1.0, supported / area)
+
+    def _settle_xz(self, pallet: OptimizedPallet,
+                   x: float, z: float, base_y: float,
+                   pl: float, pw: float, ph: float, min_support: float) -> Tuple[float, float]:
+        """Yerçekimi sıkıştırma: kutuyu -X (sol) ve -Z (arka) yönünde iterek BOŞLUKLARI kapat.
+        Aynı base_y katmanında, çakışmadan ve destek korunarak en küçük x,z'ye çeker."""
+        rects = pallet.layout_data.get("placed_rects", [])
+
+        def fits(nx: float, nz: float) -> bool:
+            return (nx >= -0.01 and nz >= -0.01 and
+                    not self._overlaps_3d(pallet, nx, nz, base_y, pl, pw, ph) and
+                    self._support_ratio(pallet, nx, nz, pl, pw, base_y) >= min_support - 1e-6)
+
+        # -X'e çek: aday x'ler = 0 ∪ {≤x biten sağ kenarlar}, küçükten ilk uyan
+        xs = sorted({0.0} | {r["x"] + r["l"] for r in rects if r["x"] + r["l"] <= x + 0.01})
+        for nx in xs:
+            if nx < x - 0.01 and fits(nx, z):
+                x = nx
+                break
+        # -Z'ye çek
+        zs = sorted({0.0} | {r["z"] + r["w"] for r in rects if r["z"] + r["w"] <= z + 0.01})
+        for nz in zs:
+            if nz < z - 0.01 and fits(x, nz):
+                z = nz
+                break
+        return x, z
+
+    def _product_key(self, item: ProductItem):
+        """Aynı ürün kimliği: ad + (yönelimden bağımsız) sıralı boyutlar + kısıtlar.
+        Aynı key → aynı palete gruplanabilir (birim yük)."""
+        dims = tuple(sorted((round(item.length_cm, 1), round(item.width_cm, 1), round(item.height_cm, 1))))
+        cons = ",".join(sorted(c.value if hasattr(c, "value") else str(c) for c in item.all_constraints))
+        return (item.name, dims, cons)
+
+    def _pack_grouped(self, items: List[ProductItem]):
+        """BİRİM YÜK modu (group_same_products): aynı ürünü aynı palete grupla.
+        Her ürün grubu KENDİ paletlerine yerleşir; başka ürünle karışmaz → tek-ürün paletler.
+        Özdeş ürünler TAM KATMANLI grid ile dizilir → DÜZ TEPE, %100 destek, tıra istiflenebilir.
+        Bedeli: palet sayısı biraz artabilir (her ürünün son paleti kısmi dolu olabilir)."""
+        groups: Dict = {}
+        for it in items:
+            groups.setdefault(self._product_key(it), []).append(it)
+        # Büyük birim hacimli gruplar önce (daha sağlam taban paletleri)
+        ordered = sorted(groups.items(), key=lambda kv: -(kv[1][0].volume_cm3))
+        for gi, (k, group) in enumerate(ordered):
+            if self._should_stop():
+                self._terminated_early = True
+                remaining = [it for _, g in ordered[gi:] for it in g]
+                self._fast_fallback_pack(remaining)
+                return
+            self._pack_uniform_group(group, k)
+
+    def _pack_uniform_group(self, items: List[ProductItem], key):
+        """Özdeş ürün grubunu TAM KATMANLAR (grid) halinde paletlere diz → düz tepe + %100 destek.
+        En çok ürün/katman veren yönelim seçilir; katman katman doldurulur. Yalnızca son paletin
+        son katmanı kısmi olabilir (tepede delik, tümsek değil → yine düz). İstif-duyarlı kısıtlı
+        ürünler (kırılgan/üst/istiflenemez) grid yerine skorlu yerleştirmeye düşer."""
+        if not items:
+            return
+        sample = items[0]
+        blocking = (sample.is_fragile or sample.must_be_top or
+                    ConstraintType.NO_STACK in sample.all_constraints)
+        pL, pW, pH = self._overflow_length, self._overflow_width, self._effective_max_height
+        max_by_weight = int(self.config.max_weight_kg // sample.weight_kg) if sample.weight_kg > 0 else 10**9
+        n = len(items)
+        # Yönelim seçimi — ÖNCELİK: düz tepe (tam katman) > 2D taban (duvar değil) > yoğunluk > ince katman.
+        # Düz tepe: son paletin son katmanı ya tek katman ya tam dolu → tüm paletler düz biter.
+        best = None
+        best_key = None
+        for (pl, pw, ph, rotated) in self._get_valid_orientations(sample):
+            rows = int((pL + 1e-6) // pl)        # uzunluk (x) boyunca
+            cols = int((pW + 1e-6) // pw)        # genişlik (z) boyunca
+            per_layer = rows * cols
+            layers_fit = int((pH + 1e-6) // ph)  # yükseklik (y) boyunca
+            if per_layer < 1 or layers_fit < 1:
+                continue
+            cap = max(1, min(per_layer * layers_fit, max_by_weight))
+            last = n - (n // cap) * cap          # son paletteki ürün sayısı
+            if last == 0:
+                last = cap
+            flat = 1 if (last <= per_layer or last % per_layer == 0) else 0   # tek katman ya da tam bölünme
+            base2d = 1 if (rows >= 2 and cols >= 2) else 0                    # gerçek 2D taban (duvar değil)
+            okey = (base2d, flat, per_layer, -ph)                             # yönelim seçim skoru (önce stabil 2D taban)
+            if best_key is None or okey > best_key:
+                best_key = okey
+                best = (pl, pw, ph, rows, cols, per_layer, layers_fit, cap, rotated)
+        if blocking or best is None:
+            for it in items:
+                self._place_item_grouped(it, key)
+            return
+        pl, pw, ph, rows, cols, per_layer, layers_fit, cap, rotated = best
+        i, n = 0, len(items)
+        while i < n:
+            pallet = self._create_empty_pallet()
+            pallet._group_key = key
+            count = min(cap, n - i)
+            for slot in range(count):
+                layer = slot // per_layer
+                within = slot % per_layer
+                row = within // cols
+                col = within % cols
+                x = row * pl       # uzunluk ekseni
+                z = col * pw       # genişlik ekseni
+                y = layer * ph     # yükseklik
+                self._commit_place(pallet, items[i], x, y, z, pl, pw, ph, rotated, "grid")
+                self._update_layer_data(pallet, x, z, y, pl, pw, ph)
+                i += 1
+            self.pallets.append(pallet)
+
+    def _place_item_grouped(self, item: ProductItem, group_key):
+        """Ürünü YALNIZCA aynı ürün grubuna ait paletlere yerleştirir (yoksa yeni palet açar)."""
+        if not self._item_fits_pallet(item):
+            self.rejected.append(RejectedItem(
+                name=item.name, reason=self._rejection_reason(item),
+                length_cm=item.length_cm, width_cm=item.width_cm,
+                height_cm=item.height_cm, weight_kg=item.weight_kg,
+            ))
+            return
+        best_pallet = None
+        best_pos = None
+        best_score = -float('inf')
+        gap_threshold = self._OPTIMALITY_GAP_PCT
+        for pallet in self.pallets:
+            if getattr(pallet, "_group_key", None) != group_key:   # SADECE aynı ürün paleti
+                continue
+            if pallet.total_weight_kg + item.weight_kg > self.config.max_weight_kg:
+                continue
+            pos = self._find_best_position(pallet, item)
+            if pos is not None:
+                x, z, base_y, pl, pw, ph_item, rotated = pos
+                if pallet.fill_rate_pct >= gap_threshold:
+                    best_pallet, best_pos = pallet, pos
+                    break
+                score = self._score_candidate(pallet, item, x, z, base_y, pl, pw, ph_item)
+                if score > best_score:
+                    best_score, best_pallet, best_pos = score, pallet, pos
+        if best_pallet is not None and best_pos is not None:
+            self._do_place_in_pallet(best_pallet, item, cached_pos=best_pos)
+            return
+        new_pallet = self._create_empty_pallet()
+        new_pallet._group_key = group_key
+        pos = self._find_best_position(new_pallet, item)
+        if pos is not None:
+            self._do_place_in_pallet(new_pallet, item, cached_pos=pos)
+            self.pallets.append(new_pallet)
+        else:
+            self.rejected.append(RejectedItem(
+                name=item.name, reason="Yeni palette bile yerleştirilemedi",
+                length_cm=item.length_cm, width_cm=item.width_cm,
+                height_cm=item.height_cm, weight_kg=item.weight_kg,
+            ))
+
     def _pack(self, items: List[ProductItem]):
+        # BİRİM YÜK modu: aynı ürünleri aynı palete grupla (düz tepe, stabil)
+        if self.settings.group_same_products:
+            self._pack_grouped(items)
+            return
         top_items = [i for i in items if i.must_be_top]
         normal_items = [i for i in items if not i.must_be_top]
 
@@ -828,6 +1016,7 @@ class BinPackingOptimizer3D:
         orientations = self._get_valid_orientations(item)
         if not orientations:
             return None
+        min_support = self.settings.min_support_ratio_pct / 100.0
         for pl, pw, ph_item, rotated in orientations:
             candidates = self._candidate_positions(pallet, pl, pw)
             for (x, z) in candidates:
@@ -835,6 +1024,9 @@ class BinPackingOptimizer3D:
                 if base_y + ph_item > pH + 0.001:
                     continue
                 if self._overlaps_3d(pallet, x, z, base_y, pl, pw, ph_item):
+                    continue
+                # STABİLİTE kapısı (hızlı modda da geçerli)
+                if base_y > 0.5 and self._support_ratio(pallet, x, z, pl, pw, base_y) < min_support:
                     continue
                 return (x, z, base_y, pl, pw, ph_item, rotated)
         return None
@@ -1048,6 +1240,7 @@ class BinPackingOptimizer3D:
 
         best = None
         best_score = -float('inf')
+        min_support = self.settings.min_support_ratio_pct / 100.0
 
         for pl, pw, ph_item, rotated in orientations:
             candidates = self._candidate_positions(pallet, pl, pw)
@@ -1069,11 +1262,23 @@ class BinPackingOptimizer3D:
                 if self._overlaps_3d(pallet, x, z, base_y, pl, pw, ph_item):
                     continue
 
+                # HARD: STABİLİTE — istiflenen kutu yeterince desteklenmeli (havada/devrik olmaz)
+                support = self._support_ratio(pallet, x, z, pl, pw, base_y)
+                if base_y > 0.5 and support < min_support:
+                    continue
+
                 score = self._score_candidate(pallet, item, x, z, base_y,
                                               pl, pw, ph_item)
+                score += support * 60.0   # iyi desteklenen (stabil) pozisyonu tercih et
                 if score > best_score:
                     best_score = score
                     best = (x, z, base_y, pl, pw, ph_item, rotated)
+
+        # Yerçekimi sıkıştırma: seçilen kutuyu -X/-Z'ye çekip boşlukları kapat
+        if best is not None:
+            bx, bz, bby, bpl, bpw, bph, brot = best
+            sx, sz = self._settle_xz(pallet, bx, bz, bby, bpl, bpw, bph, min_support)
+            best = (sx, sz, bby, bpl, bpw, bph, brot)
 
         return best
 

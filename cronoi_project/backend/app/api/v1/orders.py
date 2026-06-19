@@ -20,12 +20,10 @@ from datetime import datetime, timezone
 from collections import defaultdict
 
 from app.core.database import get_db
-from app.models import Order, OrderItem, OrderShipment, Company, User
+from app.core.auth import get_current_active_user
+from app.models import Order, OrderItem, OrderShipment, Company, User, Shipment, OrderPalletGroup, OrderPalletItem
 
 router = APIRouter()
-
-DEMO_COMPANY_ID = "00000000-0000-0000-0000-000000000001"
-DEMO_USER_ID    = "00000000-0000-0000-0000-000000000002"
 
 
 # ── Schemas ────────────────────────────────────────────────
@@ -39,6 +37,40 @@ class OrderItemInput(BaseModel):
     height_cm:   float
     weight_kg:   float
     constraints: List[dict] = []
+    pallet_type: Optional[str] = None
+
+
+class OrderPalletItemInput(BaseModel):
+    product_code:        Optional[str] = None
+    description:         str
+    quantity_per_pallet: int = Field(ge=1)
+    total_quantity:      Optional[int] = None
+
+
+class OrderPalletGroupInput(BaseModel):
+    pallet_code:  str
+    name:         Optional[str] = None
+    width_cm:     float
+    length_cm:    float
+    height_cm:    float
+    weight_kg:    float = Field(gt=0, description="Palet başına ağırlık (zorunlu)")
+    pallet_count: int = Field(ge=1, default=1)
+    stackable:    bool = True   # üst üste konabilir mi (optimizasyonda dikey istif)
+    items:        List[OrderPalletItemInput] = []
+
+
+class OrderPalletGroupUpdate(BaseModel):
+    """Pallet group güncelleme — id varsa güncelle, yoksa yeni ekle"""
+    id:           Optional[str] = None
+    pallet_code:  str
+    name:         Optional[str] = None
+    width_cm:     float
+    length_cm:    float
+    height_cm:    float
+    weight_kg:    float = Field(gt=0)
+    stackable:    bool = True
+    pallet_count: int = Field(ge=1, default=1)
+    items:        List[OrderPalletItemInput] = []
 
 
 class OrderCreate(BaseModel):
@@ -57,7 +89,10 @@ class OrderCreate(BaseModel):
     deadline_date:       Optional[str] = None
     priority:            int = 3
     notes:               Optional[str] = None
-    items:               List[OrderItemInput] = []
+    order_type:          str = "standard"
+    allowed_vehicle_types: List[str] = []
+    items:               List[OrderItemInput] = []           # standard sipariş ürünleri
+    pallet_groups:       List[OrderPalletGroupInput] = []   # pre-pack palet grupları
 
     class Config:
         json_schema_extra = {
@@ -106,6 +141,8 @@ class BulkOrderItem(BaseModel):
     height_cm:           Optional[float] = None
     weight_kg:           float = 0
     constraint_code:     Optional[str] = None
+    pallet_type:         Optional[str] = None
+    allowed_vehicle_types: Optional[str] = None  # comma-separated codes, e.g. "tir_standart,konteyner40"
 
 
 # CRONOI_LS_STATUS_MODEL.md v3 — kanonik sipariş statüleri
@@ -146,6 +183,7 @@ class OrderItemUpdate(BaseModel):
     height_cm:   float
     weight_kg:   float
     constraints: List[dict] = []
+    pallet_type: Optional[str] = None
 
 
 class OrderUpdate(BaseModel):
@@ -165,7 +203,9 @@ class OrderUpdate(BaseModel):
     deadline_date:       Optional[str] = None
     priority:            Optional[int] = None
     notes:               Optional[str] = None
-    items:               Optional[List[OrderItemUpdate]] = None  # None = dokunma, [] = hepsini sil
+    allowed_vehicle_types: Optional[List[str]] = None
+    items:               Optional[List[OrderItemUpdate]] = None          # None = dokunma, [] = hepsini sil
+    pallet_groups:       Optional[List[OrderPalletGroupUpdate]] = None   # pre-pack için
 
 
 class OrderStatusUpdate(BaseModel):
@@ -189,25 +229,57 @@ def _order_to_dict(order: Order, shipment_ref: str = None) -> dict:
                     shipment_id = str(link.shipment_id)
         except Exception:
             pass  # Lazy load yapılamadıysa None kalır
+
+    pallet_groups_data = []
+    try:
+        for g in (order.pallet_groups or []):
+            pallet_groups_data.append({
+                "id":           g.id,
+                "pallet_code":  g.pallet_code,
+                "name":         g.name,
+                "width_cm":     g.width_cm,
+                "length_cm":    g.length_cm,
+                "height_cm":    g.height_cm,
+                "weight_kg":    g.weight_kg,
+                "pallet_count": g.pallet_count,
+                "stackable":    g.stackable if g.stackable is not None else True,
+                "sort_order":   g.sort_order,
+                "items": [
+                    {
+                        "id":                  pi.id,
+                        "product_code":        pi.product_code,
+                        "description":         pi.description,
+                        "quantity_per_pallet": pi.quantity_per_pallet,
+                        "total_quantity":      pi.total_quantity,
+                        "sort_order":          pi.sort_order,
+                    }
+                    for pi in (g.items or [])
+                ],
+            })
+    except Exception:
+        pass  # Lazy load yoksa boş döner
+
     return {
-        "id":                   order.id,
-        "order_no":             order.order_no,
-        "project_code":         order.project_code,
-        "customer_name":        order.customer_name,
-        "city":                 order.city,
-        "postal_code":          order.postal_code,
-        "address":              order.address,
-        "contact_name":         order.contact_name,
-        "contact_phone":        order.contact_phone,
-        "requested_ship_date":  order.requested_ship_date,
-        "deadline_date":        order.deadline_date,
-        "priority":             order.priority,
-        "notes":                order.notes,
-        "status":               order.status,
-        "shipment_ref":         shipment_ref,
-        "shipment_id":          shipment_id,
-        "created_at":           order.created_at.isoformat() if order.created_at else None,
-        "deleted_at":           order.deleted_at.isoformat() if order.deleted_at else None,
+        "id":                    order.id,
+        "order_no":              order.order_no,
+        "project_code":          order.project_code,
+        "customer_name":         order.customer_name,
+        "city":                  order.city,
+        "postal_code":           order.postal_code,
+        "address":               order.address,
+        "contact_name":          order.contact_name,
+        "contact_phone":         order.contact_phone,
+        "requested_ship_date":   order.requested_ship_date,
+        "deadline_date":         order.deadline_date,
+        "priority":              order.priority,
+        "notes":                 order.notes,
+        "status":                order.status,
+        "order_type":            order.order_type or "standard",
+        "shipment_ref":          shipment_ref,
+        "shipment_id":           shipment_id,
+        "allowed_vehicle_types": order.allowed_vehicle_types or [],
+        "created_at":            order.created_at.isoformat() if order.created_at else None,
+        "deleted_at":            order.deleted_at.isoformat() if order.deleted_at else None,
         "items": [
             {
                 "id":          i.id,
@@ -219,9 +291,11 @@ def _order_to_dict(order: Order, shipment_ref: str = None) -> dict:
                 "height_cm":   i.height_cm,
                 "weight_kg":   i.weight_kg,
                 "constraints": i.constraints,
+                "pallet_type": i.pallet_type,
             }
             for i in (order.items or [])
         ],
+        "pallet_groups": pallet_groups_data,
     }
 
 
@@ -243,11 +317,12 @@ def _get_week(date_str: str) -> str:
 async def create_order(
     payload: OrderCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     order = Order(
         id=str(uuid4()),
-        company_id=DEMO_COMPANY_ID,
-        created_by=DEMO_USER_ID,
+        company_id=current_user.company_id,
+        created_by=current_user.id,
         order_no=payload.order_no,
         project_code=payload.project_code,
         customer_name=payload.customer_name,
@@ -263,11 +338,14 @@ async def create_order(
         deadline_date=payload.deadline_date,
         priority=payload.priority,
         notes=payload.notes,
+        order_type=payload.order_type,
+        allowed_vehicle_types=payload.allowed_vehicle_types,
         status="draft",
     )
     db.add(order)
     await db.flush()
 
+    # Standard ürün kalemleri
     for i, item in enumerate(payload.items):
         db.add(OrderItem(
             id=str(uuid4()),
@@ -280,20 +358,46 @@ async def create_order(
             height_cm=item.height_cm,
             weight_kg=item.weight_kg,
             constraints=item.constraints,
+            pallet_type=item.pallet_type,
             sort_order=i,
         ))
 
+    # Pre-pack palet grupları
+    for gi, grp in enumerate(payload.pallet_groups):
+        pg = OrderPalletGroup(
+            id=str(uuid4()),
+            order_id=order.id,
+            pallet_code=grp.pallet_code,
+            name=grp.name,
+            width_cm=grp.width_cm,
+            length_cm=grp.length_cm,
+            height_cm=grp.height_cm,
+            weight_kg=grp.weight_kg,
+            pallet_count=grp.pallet_count,
+            stackable=getattr(grp, 'stackable', True),
+            sort_order=gi,
+        )
+        db.add(pg)
+        await db.flush()
+        for pi, item in enumerate(grp.items):
+            db.add(OrderPalletItem(
+                id=str(uuid4()),
+                pallet_group_id=pg.id,
+                product_code=item.product_code,
+                description=item.description,
+                quantity_per_pallet=item.quantity_per_pallet,
+                total_quantity=item.total_quantity or (item.quantity_per_pallet * grp.pallet_count),
+                sort_order=pi,
+            ))
+
     await db.commit()
 
-    # Items ile birlikte yeniden çek
-    result = await db.execute(
-        select(Order).where(Order.id == order.id)
-    )
-    order = result.scalar_one()
-    # eager load items
     from sqlalchemy.orm import selectinload
     result2 = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order.id)
+        select(Order).options(
+            selectinload(Order.items),
+            selectinload(Order.pallet_groups).selectinload(OrderPalletGroup.items),
+        ).where(Order.id == order.id)
     )
     order = result2.scalar_one()
     return _order_to_dict(order)
@@ -306,13 +410,15 @@ async def list_orders(
     week: Optional[str] = None,   # örn: 2026-W13
     include_deleted: bool = False,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     from sqlalchemy.orm import selectinload
     q = select(Order).options(
         selectinload(Order.items),
+        selectinload(Order.pallet_groups).selectinload(OrderPalletGroup.items),
         selectinload(Order.shipment_links).selectinload(OrderShipment.shipment),
     ).where(
-        Order.company_id == DEMO_COMPANY_ID,
+        Order.company_id == current_user.company_id,
     ).order_by(Order.priority, Order.requested_ship_date)
 
     if include_deleted:
@@ -338,6 +444,7 @@ async def list_orders(
 @router.post("/group-suggestions")
 async def group_suggestions(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Taslak ve hazır siparişleri analiz eder, şehir+hafta bazında gruplar önerir.
@@ -346,7 +453,7 @@ async def group_suggestions(
     from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(
-            Order.company_id == DEMO_COMPANY_ID,
+            Order.company_id == current_user.company_id,
             Order.status.in_(["draft", "ready", "pending"]),
             Order.deleted_at.is_(None),
         ).order_by(Order.requested_ship_date)
@@ -402,6 +509,7 @@ async def group_suggestions(
 async def bulk_import(
     rows: List[BulkOrderItem],
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Excel'den parse edilmiş satırları toplu olarak sipariş olarak kaydet.
@@ -445,6 +553,7 @@ async def bulk_import(
             "height_cm":   hc,
             "weight_kg":   row.weight_kg,
             "constraints": constraints,
+            "pallet_type": row.pallet_type or None,
         })
 
     saved = []
@@ -452,8 +561,8 @@ async def bulk_import(
         meta = data["meta"]
         order = Order(
             id=str(uuid4()),
-            company_id=DEMO_COMPANY_ID,
-            created_by=DEMO_USER_ID,
+            company_id=current_user.company_id,
+            created_by=current_user.id,
             order_no=order_no,
             project_code=meta.project_code,
             customer_name=meta.customer_name or "",
@@ -467,6 +576,10 @@ async def bulk_import(
             requested_ship_date=meta.requested_ship_date,
             deadline_date=meta.deadline_date,
             priority=meta.priority,
+            allowed_vehicle_types=[
+                v.strip() for v in (meta.allowed_vehicle_types or "").split(",")
+                if v.strip()
+            ],
             status="draft",
         )
         db.add(order)
@@ -484,6 +597,7 @@ async def bulk_import(
                 height_cm=item["height_cm"],
                 weight_kg=item["weight_kg"],
                 constraints=item["constraints"],
+                pallet_type=item.get("pallet_type"),
                 sort_order=i,
             ))
         saved.append(order_no)
@@ -498,6 +612,7 @@ async def get_order(order_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Order).options(
             selectinload(Order.items),
+            selectinload(Order.pallet_groups).selectinload(OrderPalletGroup.items),
             selectinload(Order.shipment_links).selectinload(OrderShipment.shipment),
         ).where(Order.id == order_id)
     )
@@ -525,7 +640,10 @@ async def update_order(
     from sqlalchemy import delete as sa_delete
 
     result = await db.execute(
-        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+        select(Order).options(
+            selectinload(Order.items),
+            selectinload(Order.pallet_groups).selectinload(OrderPalletGroup.items),
+        ).where(Order.id == order_id)
     )
     order = result.scalar_one_or_none()
     if not order or order.deleted_at:
@@ -544,7 +662,7 @@ async def update_order(
         "order_no", "project_code", "customer_name", "address", "city",
         "postal_code", "country", "contact_name", "contact_phone",
         "contact_email", "order_date", "requested_ship_date",
-        "deadline_date", "priority", "notes",
+        "deadline_date", "priority", "notes", "allowed_vehicle_types",
     ]
     for field in meta_fields:
         value = getattr(payload, field, None)
@@ -579,6 +697,7 @@ async def update_order(
                     existing_item.height_cm = item_data.height_cm
                     existing_item.weight_kg = item_data.weight_kg
                     existing_item.constraints = item_data.constraints
+                    existing_item.pallet_type = item_data.pallet_type
                     existing_item.sort_order = i
             else:
                 # Yeni kalem ekle
@@ -593,18 +712,84 @@ async def update_order(
                     height_cm=item_data.height_cm,
                     weight_kg=item_data.weight_kg,
                     constraints=item_data.constraints,
+                    pallet_type=item_data.pallet_type,
                     sort_order=i,
                 ))
 
-    await db.commit()
+    # ── Pre-pack palet grupları güncelle ──
+    if payload.pallet_groups is not None:
+        existing_group_ids = {str(g.id) for g in order.pallet_groups}
+        incoming_group_ids = {pg.id for pg in payload.pallet_groups if pg.id}
 
-    # Session cache'ini temizle — yeni eklenen item'lar selectinload'da görünsün
+        # Silinecek gruplar
+        ids_to_delete = existing_group_ids - incoming_group_ids
+        if ids_to_delete:
+            await db.execute(
+                sa_delete(OrderPalletGroup).where(OrderPalletGroup.id.in_(ids_to_delete))
+            )
+
+        for gi, grp_data in enumerate(payload.pallet_groups):
+            if grp_data.id and grp_data.id in existing_group_ids:
+                # Mevcut grubu güncelle
+                existing_grp = await db.get(OrderPalletGroup, grp_data.id)
+                if existing_grp:
+                    existing_grp.pallet_code  = grp_data.pallet_code
+                    existing_grp.name         = grp_data.name
+                    existing_grp.width_cm     = grp_data.width_cm
+                    existing_grp.length_cm    = grp_data.length_cm
+                    existing_grp.height_cm    = grp_data.height_cm
+                    existing_grp.weight_kg    = grp_data.weight_kg
+                    existing_grp.pallet_count = grp_data.pallet_count
+                    existing_grp.sort_order   = gi
+                    # Grup itemlarını komple değiştir (basit strateji)
+                    await db.execute(
+                        sa_delete(OrderPalletItem).where(OrderPalletItem.pallet_group_id == existing_grp.id)
+                    )
+                    for pi, item in enumerate(grp_data.items):
+                        db.add(OrderPalletItem(
+                            id=str(uuid4()),
+                            pallet_group_id=existing_grp.id,
+                            product_code=item.product_code,
+                            description=item.description,
+                            quantity_per_pallet=item.quantity_per_pallet,
+                            total_quantity=item.total_quantity or (item.quantity_per_pallet * grp_data.pallet_count),
+                            sort_order=pi,
+                        ))
+            else:
+                # Yeni grup ekle
+                pg = OrderPalletGroup(
+                    id=str(uuid4()),
+                    order_id=order.id,
+                    pallet_code=grp_data.pallet_code,
+                    name=grp_data.name,
+                    width_cm=grp_data.width_cm,
+                    length_cm=grp_data.length_cm,
+                    height_cm=grp_data.height_cm,
+                    weight_kg=grp_data.weight_kg,
+                    pallet_count=grp_data.pallet_count,
+                    stackable=getattr(grp_data, 'stackable', True),
+                    sort_order=gi,
+                )
+                db.add(pg)
+                await db.flush()
+                for pi, item in enumerate(grp_data.items):
+                    db.add(OrderPalletItem(
+                        id=str(uuid4()),
+                        pallet_group_id=pg.id,
+                        product_code=item.product_code,
+                        description=item.description,
+                        quantity_per_pallet=item.quantity_per_pallet,
+                        total_quantity=item.total_quantity or (item.quantity_per_pallet * grp_data.pallet_count),
+                        sort_order=pi,
+                    ))
+
+    await db.commit()
     db.expire_all()
 
-    # Güncel halini döndür
     result2 = await db.execute(
         select(Order).options(
             selectinload(Order.items),
+            selectinload(Order.pallet_groups).selectinload(OrderPalletGroup.items),
             selectinload(Order.shipment_links).selectinload(OrderShipment.shipment),
         ).where(Order.id == order_id)
     )

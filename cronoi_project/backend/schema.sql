@@ -387,3 +387,185 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_catalog_use AFTER INSERT ON shipment_products
     FOR EACH ROW EXECUTE FUNCTION increment_catalog_use();
+
+-- ============================================================
+-- MIGRATION v2.1 — Auth System (run after initial schema)
+-- ============================================================
+
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMPTZ;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS user_seats INT NOT NULL DEFAULT 3;
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- RLS: Enable Row Level Security on tenant tables
+ALTER TABLE companies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shipments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shipment_products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pallets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pallet_products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scenarios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE loading_plans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE product_catalog ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_definitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+-- Helper: current tenant UUID set by application layer
+-- Usage: SET LOCAL app.current_company_id = '<uuid>';
+
+-- Companies: own row only (or bypass for system admin)
+CREATE POLICY tenant_companies ON companies
+    USING (id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Users: same company (or bypass for system admin)
+CREATE POLICY tenant_users ON users
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Shipments
+CREATE POLICY tenant_shipments ON shipments
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Shipment products (join via shipments)
+CREATE POLICY tenant_shipment_products ON shipment_products
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Pallets
+CREATE POLICY tenant_pallets ON pallets
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Pallet products
+CREATE POLICY tenant_pallet_products ON pallet_products
+    USING (pallet_id IN (
+        SELECT p.id FROM pallets p JOIN shipments s ON s.id = p.shipment_id
+        WHERE s.company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Scenarios
+CREATE POLICY tenant_scenarios ON scenarios
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Loading plans
+CREATE POLICY tenant_loading_plans ON loading_plans
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Product catalog
+CREATE POLICY tenant_catalog ON product_catalog
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Vehicle definitions
+CREATE POLICY tenant_vehicles ON vehicle_definitions
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Orders
+CREATE POLICY tenant_orders ON orders
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Refresh tokens do NOT use RLS (filtered by user_id in application)
+
+-- ============================================================
+-- MIGRATION v2.1 — Auth System (run after initial schema)
+-- ============================================================
+
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMPTZ;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS user_seats INT NOT NULL DEFAULT 3;
+ALTER TABLE users    ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- RLS: Enable Row Level Security on tenant tables
+ALTER TABLE companies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shipments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shipment_products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pallets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pallet_products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scenarios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE loading_plans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE product_catalog ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_definitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+-- Helper: current tenant UUID set by application layer
+-- Usage: SET LOCAL app.current_company_id = '<uuid>';
+
+-- Companies: own row only (or bypass for system admin)
+CREATE POLICY tenant_companies ON companies
+    USING (id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Users: same company (or bypass for system admin)
+CREATE POLICY tenant_users ON users
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Shipments
+CREATE POLICY tenant_shipments ON shipments
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Shipment products (join via shipments)
+CREATE POLICY tenant_shipment_products ON shipment_products
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Pallets
+CREATE POLICY tenant_pallets ON pallets
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Pallet products
+CREATE POLICY tenant_pallet_products ON pallet_products
+    USING (pallet_id IN (
+        SELECT p.id FROM pallets p JOIN shipments s ON s.id = p.shipment_id
+        WHERE s.company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Scenarios
+CREATE POLICY tenant_scenarios ON scenarios
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Loading plans
+CREATE POLICY tenant_loading_plans ON loading_plans
+    USING (shipment_id IN (
+        SELECT id FROM shipments
+        WHERE company_id::text = current_setting('app.current_company_id', true)
+    ) OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Product catalog
+CREATE POLICY tenant_catalog ON product_catalog
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Vehicle definitions
+CREATE POLICY tenant_vehicles ON vehicle_definitions
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Orders
+CREATE POLICY tenant_orders ON orders
+    USING (company_id::text = current_setting('app.current_company_id', true)
+           OR current_setting('app.is_system_admin', true) = 'true');
+
+-- Refresh tokens do NOT use RLS (filtered by user_id in application)

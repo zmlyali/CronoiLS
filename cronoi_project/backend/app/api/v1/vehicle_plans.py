@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 
 from app.core.database import get_db
-from app.models import VehiclePlan, Shipment, Scenario, Order, OrderShipment, Pallet
+from app.core.auth import get_current_active_user
+from app.models import VehiclePlan, Shipment, Scenario, Order, OrderShipment, Pallet, User
 
 router = APIRouter()
 
@@ -43,6 +44,10 @@ class VehicleItemSchema(BaseModel):
     planned_date: str = ""
     planned_time: str = ""
     notes: str = ""
+    # Manuel 3D yükleme yerleşimi (sürükle/döndür/istif sonucu) — siparişe bağlı korunur
+    placements: list = Field(default_factory=list)
+    manual_edited: bool = False
+    layout_locked: bool = False
 
 
 class VehiclePlanCreateRequest(BaseModel):
@@ -111,10 +116,11 @@ def _plan_to_dict(plan: VehiclePlan, orders=None, pallets=None) -> dict:
 async def create_vehicle_plan(
     payload: VehiclePlanCreateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
-    """Araç planı onaylandığında oluştur."""
+    """Araç planı onaylan dığında oluştur."""
     shipment = await db.get(Shipment, payload.shipment_id)
-    if not shipment:
+    if not shipment or (not current_user.is_system_admin and shipment.company_id != current_user.company_id):
         raise HTTPException(404, "Sevkiyat bulunamadı")
 
     plan = VehiclePlan(
@@ -144,9 +150,12 @@ async def list_vehicle_plans(
     limit: int = Query(50, le=200),
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Tüm araç planlarını listele (filtrelenebilir)."""
     q = select(VehiclePlan).order_by(desc(VehiclePlan.approved_at))
+    if not current_user.is_system_admin:
+        q = q.where(VehiclePlan.company_id == current_user.company_id)
     if status:
         q = q.where(VehiclePlan.status == status)
     q = q.offset(offset).limit(limit)
@@ -178,10 +187,11 @@ async def list_vehicle_plans(
 async def get_vehicle_plan(
     plan_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Plan detayı: araçlar, paletler, siparişler."""
     plan = await db.get(VehiclePlan, plan_id)
-    if not plan:
+    if not plan or (not current_user.is_system_admin and plan.company_id != current_user.company_id):
         raise HTTPException(404, "Araç planı bulunamadı")
 
     # Siparişler
@@ -223,10 +233,11 @@ async def update_vehicle_plan(
     plan_id: str,
     payload: VehiclePlanUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Plan notlarını veya araç bilgilerini güncelle."""
     plan = await db.get(VehiclePlan, plan_id)
-    if not plan:
+    if not plan or (not current_user.is_system_admin and plan.company_id != current_user.company_id):
         raise HTTPException(404, "Araç planı bulunamadı")
     if plan.status in ("completed", "cancelled"):
         raise HTTPException(400, "Tamamlanmış veya iptal edilmiş plan güncellenemez")
@@ -246,10 +257,11 @@ async def update_plan_status(
     plan_id: str,
     payload: StatusUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Plan durumunu değiştir."""
     plan = await db.get(VehiclePlan, plan_id)
-    if not plan:
+    if not plan or (not current_user.is_system_admin and plan.company_id != current_user.company_id):
         raise HTTPException(404, "Araç planı bulunamadı")
 
     new_status = payload.status
@@ -269,10 +281,11 @@ async def update_plan_status(
 async def delete_vehicle_plan(
     plan_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Araç planını sil."""
     plan = await db.get(VehiclePlan, plan_id)
-    if not plan:
+    if not plan or (not current_user.is_system_admin and plan.company_id != current_user.company_id):
         raise HTTPException(404, "Araç planı bulunamadı")
     await db.delete(plan)
     return {"deleted": True}

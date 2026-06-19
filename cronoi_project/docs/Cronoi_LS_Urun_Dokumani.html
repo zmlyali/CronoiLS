@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Cronoi LS — Ürün Dokümanı</title>
+<style>
+  :root{
+    --navy:#132238; --navy2:#21466f; --crimson:#C84259; --crimson-d:#8C1A2E;
+    --gold:#f3a446; --gold-d:#cb5a2b; --green:#1D9E75; --ink:#1a1f2e;
+    --muted:#5b6678; --line:#e6e9ef; --bg:#f6f8fb; --soft:#eef2f7;
+  }
+  *{ box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  html,body{ margin:0; padding:0; font-family:'Segoe UI',Calibri,Arial,sans-serif; color:var(--ink); background:#fff; }
+  @page{ size:A4; margin:0; }
+  .page{ width:210mm; min-height:297mm; padding:18mm 16mm 14mm; margin:0 auto; position:relative; background:#fff; page-break-after:always; overflow:hidden; }
+  .page:last-child{ page-break-after:auto; }
+  h1,h2,h3{ margin:0; line-height:1.15; }
+  p{ line-height:1.5; }
+  .small{ font-size:9.5pt; color:var(--muted); }
+  .tag{ display:inline-block; background:var(--navy); color:#dce8ff; border-radius:999px; padding:4px 12px; font-size:8.5pt; font-weight:700; letter-spacing:.10em; text-transform:uppercase; }
+  .accent{ color:var(--crimson); }
+  .kicker{ font-size:9pt; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--crimson); }
+  .sec-title{ font-size:18pt; font-weight:800; color:var(--navy); margin:4px 0 2px; }
+  .sec-sub{ font-size:10pt; color:var(--muted); margin-bottom:14px; }
+  .footer{ position:absolute; bottom:8mm; left:16mm; right:16mm; display:flex; justify-content:space-between; font-size:8pt; color:#9aa3b2; border-top:1px solid var(--line); padding-top:6px; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  .card{ background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  .card.soft{ background:var(--soft); border-color:#e3e8ef; }
+  .pill{ display:inline-block; background:#fff; border:1px solid var(--line); border-radius:999px; padding:3px 10px; font-size:8.5pt; font-weight:600; color:var(--muted); }
+  .stat{ font-size:30pt; font-weight:800; color:var(--navy); line-height:1; }
+  .stat.crim{ color:var(--crimson); } .stat.grn{ color:var(--green); } .stat.gld{ color:var(--gold-d); }
+  .feat{ display:flex; gap:10px; align-items:flex-start; margin-bottom:10px; }
+  .feat .ic{ width:30px; height:30px; min-width:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:15px; color:#fff; }
+  .feat b{ font-size:10.5pt; color:var(--ink); }
+  .feat span{ font-size:9pt; color:var(--muted); display:block; margin-top:1px; line-height:1.4; }
+  table.ft{ width:100%; border-collapse:collapse; font-size:9pt; }
+  table.ft th{ text-align:left; background:var(--navy); color:#fff; padding:7px 10px; font-size:8.5pt; }
+  table.ft td{ padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.ft tr:nth-child(even){ background:#fafbfc; }
+  .check{ color:var(--green); font-weight:800; }
+</style>
+</head>
+<body>
+
+<!-- ══════════ KAPAK ══════════ -->
+<div class="page" style="padding:0;">
+  <div style="position:absolute;inset:0;background:radial-gradient(circle at 22% 18%,#21466f 0%,#132238 50%,#0b1220 100%);"></div>
+  <div style="position:absolute;top:-60px;right:-50px;width:300px;height:300px;border-radius:50%;background:rgba(243,164,70,.12);"></div>
+  <div style="position:absolute;bottom:-90px;left:-40px;width:340px;height:340px;border-radius:50%;background:rgba(200,66,89,.14);"></div>
+  <div style="position:relative;color:#fff;padding:30mm 18mm;height:100%;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:46px;height:46px;border-radius:13px;background:linear-gradient(135deg,var(--crimson),var(--gold));display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:900;color:#fff;">C</div>
+      <div>
+        <div style="font-size:20pt;font-weight:900;letter-spacing:-.5px;">Cronoi <span style="color:#ffd9a0;">LS</span></div>
+        <div style="font-size:8.5pt;color:#9ec0de;letter-spacing:.22em;text-transform:uppercase;">Logistics Suite</div>
+      </div>
+    </div>
+
+    <div style="margin-top:auto;">
+      <div class="tag" style="background:rgba(255,255,255,.12);color:#ffe3bf;">Ürün Tanıtım Dokümanı</div>
+      <h1 style="font-size:34pt;font-weight:800;margin:16px 0 10px;max-width:150mm;">Akıllı Yükleme ve<br>Sevkiyat Optimizasyonu</h1>
+      <p style="font-size:13pt;color:#cfe0f0;max-width:140mm;line-height:1.5;">
+        Her TIR'ı, her paleti ve her sevkiyatı <b style="color:#fff;">en düşük maliyetle</b> ve
+        <b style="color:#fff;">gerçek hayata uygun</b> şekilde planlayın. Saatler süren manuel
+        yükleme planı, artık <b style="color:#ffd9a0;">dakikalar</b> içinde, 3 boyutlu ve denetlenebilir.
+      </p>
+      <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;">
+        <span class="pill" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#fff;">3D Yükleme Optimizasyonu</span>
+        <span class="pill" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#fff;">Maliyet Senaryoları</span>
+        <span class="pill" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#fff;">Kısıt & Stabilite Motoru</span>
+        <span class="pill" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#fff;">Harita & Dashboard</span>
+      </div>
+    </div>
+    <div style="margin-top:26px;font-size:8.5pt;color:#8fb7de;border-top:1px solid rgba(255,255,255,.15);padding-top:10px;">
+      Lojistik · Üretim · Mobilya · Dağıtım · 3PL operasyonları için yükleme zekâsı
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ S.1 — DEĞER ÖNERİSİ ══════════ -->
+<div class="page">
+  <div class="kicker">Neden Cronoi LS?</div>
+  <h2 class="sec-title">Boş giden metreküp, gereksiz araç ve hasarlı yük — hepsi para kaybı.</h2>
+  <p class="sec-sub">Cronoi LS bu üç kaybı aynı anda kapatır: doğru istifleme, doğru araç, doğru sevkiyat.</p>
+
+  <div class="grid3" style="margin-bottom:16px;">
+    <div class="card soft"><div class="stat crim">%15–30</div><div class="small" style="margin-top:6px;"><b>araç maliyetinde tasarruf</b><br>daha az araç + daha yüksek doluluk</div></div>
+    <div class="card soft"><div class="stat grn">dakikalar</div><div class="small" style="margin-top:6px;"><b>planlama süresi</b><br>saatlerce süren manuel iş otomatik</div></div>
+    <div class="card soft"><div class="stat gld">≥%70</div><div class="small" style="margin-top:6px;"><b>destekli istif kuralı</b><br>tır hareketinde kaymayan/devrilmeyen palet</div></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="kicker" style="margin-bottom:8px;">Örnek Senaryo · Tek Sevkiyat</div>
+      <div style="font-size:10pt;font-weight:700;color:var(--ink);margin-bottom:10px;">Araç sayısı &amp; doluluk: Manuel vs Cronoi LS</div>
+      <!-- BAR CHART -->
+      <svg viewBox="0 0 320 170" width="100%" height="150">
+        <!-- grid -->
+        <line x1="40" y1="10" x2="40" y2="130" stroke="#dfe4ec"/>
+        <line x1="40" y1="130" x2="310" y2="130" stroke="#dfe4ec"/>
+        <!-- Manuel -->
+        <text x="40" y="148" font-size="9" fill="#5b6678">Manuel</text>
+        <rect x="58" y="40" width="34" height="90" rx="4" fill="#c3ccd8"/>
+        <text x="75" y="34" font-size="11" font-weight="700" fill="#5b6678" text-anchor="middle">10</text>
+        <rect x="100" y="78" width="34" height="52" rx="4" fill="#aeb8c6"/>
+        <text x="117" y="72" font-size="11" font-weight="700" fill="#5b6678" text-anchor="middle">%62</text>
+        <!-- Cronoi -->
+        <text x="210" y="148" font-size="9" fill="#5b6678">Cronoi LS</text>
+        <rect x="208" y="67" width="34" height="63" rx="4" fill="#C84259"/>
+        <text x="225" y="61" font-size="11" font-weight="800" fill="#C84259" text-anchor="middle">7</text>
+        <rect x="250" y="32" width="34" height="98" rx="4" fill="#1D9E75"/>
+        <text x="267" y="26" font-size="11" font-weight="800" fill="#1D9E75" text-anchor="middle">%88</text>
+        <!-- legend -->
+        <rect x="58" y="158" width="9" height="9" rx="2" fill="#aeb8c6"/><text x="71" y="166" font-size="8" fill="#5b6678">Araç sayısı</text>
+        <rect x="150" y="158" width="9" height="9" rx="2" fill="#1D9E75"/><text x="163" y="166" font-size="8" fill="#5b6678">Doluluk %</text>
+      </svg>
+      <div class="small" style="margin-top:4px;">Örnek/illüstratif; gerçek kazanım ürün karması ve araç filosuna göre değişir.</div>
+    </div>
+
+    <div class="card">
+      <div class="kicker" style="margin-bottom:8px;">Maliyet Kırılımı &amp; Şeffaflık</div>
+      <div style="font-size:10pt;font-weight:700;color:var(--ink);margin-bottom:10px;">Her senaryo, kalem kalem maliyet</div>
+      <!-- DONUT -->
+      <svg viewBox="0 0 200 150" width="100%" height="150">
+        <g transform="translate(75,75)">
+          <!-- segments: base, fuel, driver, opportunity -->
+          <circle r="46" fill="none" stroke="#132238" stroke-width="26" stroke-dasharray="101 288" transform="rotate(-90)"/>
+          <circle r="46" fill="none" stroke="#C84259" stroke-width="26" stroke-dasharray="86 288" stroke-dashoffset="-101" transform="rotate(-90)"/>
+          <circle r="46" fill="none" stroke="#f3a446" stroke-width="26" stroke-dasharray="72 288" stroke-dashoffset="-187" transform="rotate(-90)"/>
+          <circle r="46" fill="none" stroke="#1D9E75" stroke-width="26" stroke-dasharray="29 288" stroke-dashoffset="-259" transform="rotate(-90)"/>
+          <text y="-2" font-size="11" font-weight="800" fill="#132238" text-anchor="middle">Toplam</text>
+          <text y="12" font-size="8" fill="#5b6678" text-anchor="middle">maliyet</text>
+        </g>
+        <g font-size="9" fill="#3a4456">
+          <rect x="135" y="28" width="9" height="9" rx="2" fill="#132238"/><text x="148" y="36">Araç başı</text>
+          <rect x="135" y="48" width="9" height="9" rx="2" fill="#C84259"/><text x="148" y="56">Yakıt</text>
+          <rect x="135" y="68" width="9" height="9" rx="2" fill="#f3a446"/><text x="148" y="76">Sürücü</text>
+          <rect x="135" y="88" width="9" height="9" rx="2" fill="#1D9E75"/><text x="148" y="96">Fırsat mal.</text>
+        </g>
+      </svg>
+      <div class="small" style="margin-top:4px;">Karar vericiye “neden bu araç?” sorusunun net cevabı.</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px;background:linear-gradient(135deg,#fff,#fbfdff);">
+    <div class="kicker" style="margin-bottom:6px;">Tek Cümleyle</div>
+    <p style="font-size:12pt;color:var(--navy);font-weight:600;margin:0;">
+      Cronoi LS, <span class="accent">yükleme planını bir tahmin olmaktan çıkarıp ölçülebilir bir mühendislik kararına</span>
+      dönüştürür — ekranda gördüğünüz yerleşim, araca gerçekte yüklenecek olandır.
+    </p>
+  </div>
+
+  <div class="footer"><span>Cronoi LS — Ürün Dokümanı</span><span>1</span></div>
+</div>
+
+<!-- ══════════ S.2 — FAYDALAR ══════════ -->
+<div class="page">
+  <div class="kicker">İş Sonuçları</div>
+  <h2 class="sec-title">Operasyonu hızlandırır, maliyeti düşürür, riski azaltır.</h2>
+  <p class="sec-sub">Her özellik bir iş faydasına bağlıdır — yazılım değil, sonuç satıyoruz.</p>
+
+  <div class="grid2" style="gap:14px;">
+    <div class="card">
+      <div class="feat"><div class="ic" style="background:var(--crimson)">₺</div><div><b>Daha az araçla daha çok yük</b><span>Döndürmeli, önden doldurmalı zemin paketleme ile her aracın kullanılabilir hacmini sonuna kadar değerlendirir; gereksiz araç çıkışını engeller.</span></div></div>
+      <div class="feat"><div class="ic" style="background:var(--green)">⚡</div><div><b>Saatlik planlama → dakikalar</b><span>Onlarca palet ve aracın el ile dizilmesi yerine tek tıkla optimize edilmiş, denetlenebilir bir plan.</span></div></div>
+      <div class="feat"><div class="ic" style="background:var(--gold-d)">🛡️</div><div><b>Hasarsız, yola dayanıklı sevkiyat</b><span>Her kutu en az %70 destekle istiflenir; kırılgan/ağır/“üzerine konulamaz” kuralları uygulanır — tır hareketinde kayma/devrilme önlenir.</span></div></div>
+    </div>
+    <div class="card">
+      <div class="feat"><div class="ic" style="background:var(--navy)">📊</div><div><b>Kanıta dayalı kararlar</b><span>3 strateji (minimum maliyet / dengeli / verimlilik) yan yana; “tek TIR mı, 3 panelvan mı?” sorusu maliyetle yanıtlanır.</span></div></div>
+      <div class="feat"><div class="ic" style="background:#7c3aed">🧩</div><div><b>Sizin kurallarınız, sizin firmanız</b><span>Kısıtlar, toleranslar, doluluk hedefi ve araç maliyetleri ayarlardan yönetilir — optimizasyon işinize göre çalışır.</span></div></div>
+      <div class="feat"><div class="ic" style="background:#0e8a72">🌍</div><div><b>Büyük resmi tek ekranda görün</b><span>Sipariş haritası + KPI + “dikkat gerektiren” paneli tek dashboardda; nerede ne kaldığı bir bakışta.</span></div></div>
+    </div>
+  </div>
+
+  <!-- ROI strip -->
+  <div class="card soft" style="margin-top:16px;">
+    <div class="kicker" style="margin-bottom:10px;">Tasarruf Nereden Gelir?</div>
+    <svg viewBox="0 0 520 70" width="100%" height="70">
+      <!-- stacked horizontal bar -->
+      <rect x="0" y="20" width="200" height="30" rx="6" fill="#132238"/>
+      <rect x="204" y="20" width="150" height="30" rx="6" fill="#C84259"/>
+      <rect x="358" y="20" width="100" height="30" rx="6" fill="#f3a446"/>
+      <rect x="462" y="20" width="58" height="30" rx="6" fill="#1D9E75"/>
+      <text x="100" y="39" font-size="10" fill="#fff" text-anchor="middle" font-weight="700">Doluluk artışı</text>
+      <text x="279" y="39" font-size="10" fill="#fff" text-anchor="middle" font-weight="700">Araç azaltma</text>
+      <text x="408" y="39" font-size="9" fill="#fff" text-anchor="middle" font-weight="700">Tip seçimi</text>
+      <text x="491" y="39" font-size="8" fill="#fff" text-anchor="middle" font-weight="700">Hasar↓</text>
+    </svg>
+    <div class="small">Boş metreküpün doldurulması + araç sayısının düşürülmesi + doğru araç tipi + hasar/iade azalması.</div>
+  </div>
+
+  <div class="grid3" style="margin-top:16px;">
+    <div class="card"><div class="small" style="font-weight:700;color:var(--ink);margin-bottom:4px;">Sevkiyat Müdürü</div><div class="small">Bugün/yarın ne yüklenecek, hangi sipariş gecikti — anında.</div></div>
+    <div class="card"><div class="small" style="font-weight:700;color:var(--ink);margin-bottom:4px;">Lojistik Müdürü</div><div class="small">Haftalık plan, araç ihtiyacı ve doluluk hedefi tek yerde.</div></div>
+    <div class="card"><div class="small" style="font-weight:700;color:var(--ink);margin-bottom:4px;">Yönetim / CEO</div><div class="small">Maliyet, tasarruf ve operasyon sağlığı şeffaf KPI’larla.</div></div>
+  </div>
+
+  <div class="footer"><span>Cronoi LS — Ürün Dokümanı</span><span>2</span></div>
+</div>
+
+<!-- ══════════ S.3 — ÖZELLİKLER ══════════ -->
+<div class="page">
+  <div class="kicker">Yetenekler</div>
+  <h2 class="sec-title">Uçtan uca yükleme ve sevkiyat zekâsı</h2>
+  <p class="sec-sub">Ürün girişinden araca yerleşime, maliyetten haritaya kadar tek platform.</p>
+
+  <table class="ft">
+    <tr><th style="width:33%;">Modül</th><th>Öne çıkan özellikler</th></tr>
+    <tr><td><b>Palet Optimizasyonu</b><br><span class="small">Ürün → Palet (3D Bin Packing)</span></td>
+        <td>6 yönelimli 3D yerleştirme · yükseklik/ağırlık HARD limitleri · <b>stabilite kapısı (≥%70 destek)</b> · boşluk sıkıştırma · <b>birim-yük gruplama</b> (aynı ürün → düz tepeli, tıra istiflenebilir palet) · taşma toleransı</td></tr>
+    <tr><td><b>Araç Optimizasyonu</b><br><span class="small">Palet → Araç (Filo)</span></td>
+        <td>Birleşik zemin paketleyici (FFDH raf + <b>otomatik döndürme</b> + <b>önden doldurma</b>) · gerçek kapasiteye göre araç sayısı · ağırlık &amp; <b>aks dengesi</b> · kullanılabilir hacme göre doluluk</td></tr>
+    <tr><td><b>3D Görselleştirme &amp; Editör</b></td>
+        <td>Araç tipine özel gerçekçi render (TIR, kamyon, panelvan, <b>konteyner—gemi güvertesi</b>, frigorifik) · birebir ölçekli paletler · <b>manuel sürükle-bırak / döndür / istif editörü</b> · kaydet &amp; siparişe bağla</td></tr>
+    <tr><td><b>Senaryo &amp; Maliyet</b></td>
+        <td>3 strateji (min. maliyet / dengeli / verimlilik) · tüm araç tipleri karşılaştırması · kalem bazlı maliyet (araç + yakıt + sürücü + fırsat) · manuel araç seçimi</td></tr>
+    <tr><td><b>Sipariş Yönetimi</b></td>
+        <td>Sipariş CRUD · <b>Excel içe aktarma</b> · pre-pack akışı · termin/öncelik takibi · gruplama (müşteri/şehir/hafta) · adres &amp; teslim bilgileri</td></tr>
+    <tr><td><b>Kısıt Havuzu</b></td>
+        <td>16+ tanımlı kısıt (yönelim, istif, çevre—soğuk zincir/hazmat, yükleme sırası) · firma kısıtları · uyumluluk matrisi · <b>optimizasyonda otomatik uygulanır</b></td></tr>
+    <tr><td><b>Araç Tipi Kısıtı</b></td>
+        <td>Sipariş bazında zorunlu/izinli araç tipi · optimizasyonda <b>hard filtre</b> · manuel seçimde uyarı · “tek TIR ile gitmeli” gibi kuralların garantisi</td></tr>
+    <tr><td><b>Harita &amp; Dashboard</b></td>
+        <td>İnteraktif sipariş haritası (coğrafi dağılım, hassas adres) · <b>tek görünüm dashboard</b> (KPI + harita + dikkat paneli + canlı akış)</td></tr>
+    <tr><td><b>Kurumsal</b></td>
+        <td>Çok-kiracılı (firma bazlı izolasyon) · güvenli oturum/rol · 21 tema · API tabanlı mimari (PostgreSQL)</td></tr>
+  </table>
+
+  <div class="card soft" style="margin-top:14px;">
+    <div class="kicker" style="margin-bottom:6px;">Standartlara Uyum</div>
+    <div class="small">
+      <span class="pill">CTU Code — boşluk/blokaj limitleri</span>
+      <span class="pill">ISPM-15 — ahşap palet kontrolü</span>
+      <span class="pill">McKee BCT — ambalaj dayanımı</span>
+      <span class="pill">Aks dengesi — ön/arka yük dağılımı</span>
+    </div>
+  </div>
+
+  <div class="footer"><span>Cronoi LS — Ürün Dokümanı</span><span>3</span></div>
+</div>
+
+<!-- ══════════ S.4 — NASIL ÇALIŞIR ══════════ -->
+<div class="page">
+  <div class="kicker">Motorun İçi</div>
+  <h2 class="sec-title">Tahmin değil, mühendislik.</h2>
+  <p class="sec-sub">Yöneylem araştırması literatürüne dayalı, denetlenebilir bir optimizasyon hattı.</p>
+
+  <!-- PIPELINE -->
+  <div class="card" style="margin-bottom:16px;">
+    <svg viewBox="0 0 540 120" width="100%" height="130">
+      <defs><marker id="arr" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8"/></marker></defs>
+      <g font-family="Segoe UI">
+        <!-- step 1 -->
+        <rect x="6" y="30" width="118" height="58" rx="10" fill="#132238"/>
+        <text x="65" y="54" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">1 · Ürünler</text>
+        <text x="65" y="70" font-size="8" fill="#9ec0de" text-anchor="middle">boyut · ağırlık · kısıt</text>
+        <line x1="126" y1="59" x2="146" y2="59" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+        <!-- step 2 -->
+        <rect x="148" y="30" width="118" height="58" rx="10" fill="#C84259"/>
+        <text x="207" y="54" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">2 · Paletler</text>
+        <text x="207" y="70" font-size="8" fill="#ffd9df" text-anchor="middle">3D istif · stabilite</text>
+        <line x1="268" y1="59" x2="288" y2="59" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+        <!-- step 3 -->
+        <rect x="290" y="30" width="118" height="58" rx="10" fill="#f3a446"/>
+        <text x="349" y="54" font-size="11" font-weight="800" fill="#3a2400" text-anchor="middle">3 · Araçlar</text>
+        <text x="349" y="70" font-size="8" fill="#5c3a00" text-anchor="middle">zemin paketleme · maliyet</text>
+        <line x1="410" y1="59" x2="430" y2="59" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+        <!-- step 4 -->
+        <rect x="432" y="30" width="102" height="58" rx="10" fill="#1D9E75"/>
+        <text x="483" y="54" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">4 · 3D Doğrulama</text>
+        <text x="483" y="70" font-size="8" fill="#d7f5ea" text-anchor="middle">görsel = gerçek</text>
+        <text x="270" y="16" font-size="8.5" fill="#5b6678" text-anchor="middle" font-weight="700">Optimizasyon Hattı — her adım denetlenebilir, ayarlardan yönetilebilir</text>
+        <text x="270" y="108" font-size="8.5" fill="#94a3b8" text-anchor="middle">Tek motor: optimizer ile 3D görsel AYNI yerleştirmeyi kullanır → ekranda taşma yoksa araçta da yoktur.</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="kicker" style="margin-bottom:8px;">Bilimsel Temel</div>
+      <div class="feat"><div class="ic" style="background:var(--navy)">▦</div><div><b>Shelf / FFDH paketleme</b><span>Coffman–Garey–Johnson (raf-paketleme) — paletleri araç zeminine yan yana, önden arkaya gerçekçi dizilim.</span></div></div>
+      <div class="feat"><div class="ic" style="background:var(--crimson)">◫</div><div><b>Pallet Loading Problem</b><span>Dowsland — eş ürünlerde en iyi yönelim ve tam-katman (düz tepe) çözümü.</span></div></div>
+      <div class="feat"><div class="ic" style="background:var(--green)">⚖</div><div><b>Stabilite &amp; CoG</b><span>Destek oranı + ağırlık merkezi denetimi — yola dayanıklı birim yük.</span></div></div>
+    </div>
+    <div class="card soft">
+      <div class="kicker" style="margin-bottom:8px;">Kısıtlar Optimizasyonda Yaşar</div>
+      <div class="small" style="line-height:1.7;">
+        <div><span class="check">✓</span> Yönelim: yatay / dikey / “bu taraf yukarı”</div>
+        <div><span class="check">✓</span> İstif: kırılgan · ağır (alt kat) · üzerine konulamaz</div>
+        <div><span class="check">✓</span> Katman: alt/üst zorunlu · maks. üst yük</div>
+        <div><span class="check">✓</span> Çevre: soğuk zincir · sıcaklık · nem · hazmat</div>
+        <div><span class="check">✓</span> Yükleme sırası: ilk/son yükle · araç ön/arka</div>
+        <div><span class="check">✓</span> Araç tipi: sipariş bazında zorunlu tip (hard filtre)</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px;background:#132238;color:#fff;">
+    <div class="kicker" style="color:#ffd9a0;margin-bottom:6px;">Cronoi Farkı</div>
+    <p style="margin:0;font-size:11pt;color:#e8eef7;">
+      Çoğu araç “hacme göre sığar mı?” diye bakar. Cronoi LS <b>gerçek zemin alanına, stabiliteye ve kısıtlara</b>
+      göre yerleştirir; optimizasyon ile 3D görseli <b>aynı motordan</b> üretir. Sonuç: planla gerçek arasında sürpriz yok.
+    </p>
+  </div>
+
+  <div class="footer"><span>Cronoi LS — Ürün Dokümanı</span><span>4</span></div>
+</div>
+
+<!-- ══════════ S.5 — NEDEN / KİME / İLETİŞİM ══════════ -->
+<div class="page">
+  <div class="kicker">Özet</div>
+  <h2 class="sec-title">Boş giden metreküpü gelire çevirin.</h2>
+  <p class="sec-sub">Kimler için, neden ve nasıl başlanır.</p>
+
+  <div class="grid2" style="gap:14px;">
+    <div class="card">
+      <div class="kicker" style="margin-bottom:8px;">Kimler İçin?</div>
+      <div class="small" style="line-height:1.8;">
+        <div>• Mobilya &amp; beyaz eşya üreticileri (büyük/hacimli ürün)</div>
+        <div>• İhracatçılar — konteyner &amp; TIR yükleme</div>
+        <div>• 3PL / dağıtım &amp; nakliye firmaları</div>
+        <div>• Üretici lojistik departmanları</div>
+        <div>• Sevkiyat planlama &amp; operasyon ekipleri</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="kicker" style="margin-bottom:8px;">Cronoi LS vs Manuel / Klasik Araçlar</div>
+      <table class="ft" style="font-size:8.5pt;">
+        <tr><th>Konu</th><th>Manuel</th><th>Cronoi LS</th></tr>
+        <tr><td>Yerleşim</td><td>tahmin/Excel</td><td><b>3D, denetlenebilir</b></td></tr>
+        <tr><td>Stabilite</td><td>el yordamı</td><td><b>otomatik kural</b></td></tr>
+        <tr><td>Maliyet</td><td>belirsiz</td><td><b>senaryo + kırılım</b></td></tr>
+        <tr><td>Süre</td><td>saatler</td><td><b>dakikalar</b></td></tr>
+        <tr><td>Kurallar</td><td>kişiye bağlı</td><td><b>sistemde sabit</b></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid3" style="margin-top:16px;">
+    <div class="card soft"><div class="stat" style="font-size:20pt;">Hızlı kurulum</div><div class="small" style="margin-top:6px;">Web tabanlı; tarayıcıdan erişim. Excel ile sipariş aktarımı.</div></div>
+    <div class="card soft"><div class="stat" style="font-size:20pt;">Esnek</div><div class="small" style="margin-top:6px;">Firma kuralları, araç filosu ve maliyetler tamamen ayarlanabilir.</div></div>
+    <div class="card soft"><div class="stat" style="font-size:20pt;">Ölçeklenir</div><div class="small" style="margin-top:6px;">Çok-kiracılı mimari; tek firmadan filoya kadar.</div></div>
+  </div>
+
+  <div class="card" style="margin-top:18px;background:radial-gradient(circle at 15% 20%,#21466f,#132238);color:#fff;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
+      <div>
+        <div class="kicker" style="color:#ffd9a0;">Hemen Görün</div>
+        <div style="font-size:15pt;font-weight:800;margin:4px 0;">Kendi siparişlerinizle bir demo planlayalım.</div>
+        <div class="small" style="color:#bcd2e8;">Mevcut bir sevkiyatınızı yükleyin; tasarrufu birlikte ölçelim.</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:18pt;font-weight:900;">Cronoi <span style="color:#ffd9a0;">LS</span></div>
+        <div class="small" style="color:#9ec0de;">cronoi.com · info@cronoi.com</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer"><span>Cronoi LS — Ürün Dokümanı · © 2026</span><span>5</span></div>
+</div>
+
+</body>
+</html>
