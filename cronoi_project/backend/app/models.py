@@ -307,6 +307,7 @@ class Order(Base):
     priority             = Column(Integer, nullable=False, default=3)
     order_type           = Column(String(20), nullable=False, default="standard")
     allowed_vehicle_types = Column(JSONB, nullable=False, default=list)
+    consolidation_no     = Column(String(40))   # Konsolidasyon/Tasarruf No — birlikte planlanan siparişleri gruplar
     created_at           = Column(DateTime(timezone=True), server_default=func.now())
     updated_at           = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at           = Column(DateTime(timezone=True))

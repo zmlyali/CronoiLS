@@ -4,7 +4,7 @@ Cronoi LS — Shipments API (Gerçek DB implementasyonu)
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, or_
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from uuid import UUID, uuid4
@@ -89,7 +89,8 @@ class ShipmentCreate(BaseModel):
     loading_date: Optional[str] = None
     delivery_date: Optional[str] = None
     order_ids: List[str] = []
-    products: List[ProductInput] = Field(..., min_length=1)
+    # Prepack siparişlerde ürün yoktur (paletler grup-tanımlı) → boş olabilir.
+    products: List[ProductInput] = Field(default_factory=list)
 
     class Config:
         json_schema_extra = {
@@ -157,17 +158,19 @@ async def _next_reference_no(db: AsyncSession) -> str:
 
 async def _save_pallets(db: AsyncSession, shipment_id: str, pallets_data: list):
     for i, p in enumerate(pallets_data):
+        # FE hem snake_case (pallet_number/total_weight_kg/...) hem eski camelCase gönderebilir →
+        # ikisini de oku (eskiden yalnız camelCase okunuyordu → paletler 0 ağırlık/yükseklik kaydoluyordu).
         pallet = Pallet(
             id=str(uuid4()),
             shipment_id=shipment_id,
-            pallet_number=i + 1,
-            pallet_type=p.get("type", "P1"),
-            total_weight_kg=p.get("totalWeight", 0),
-            total_height_cm=p.get("totalHeight", 0),
-            total_volume_m3=p.get("totalVolume", 0),
-            fill_rate_pct=p.get("fillRate", 0),
+            pallet_number=p.get("pallet_number", i + 1),
+            pallet_type=p.get("pallet_type", p.get("type", "P1")),
+            total_weight_kg=p.get("total_weight_kg", p.get("totalWeight", 0)) or 0,
+            total_height_cm=p.get("total_height_cm", p.get("totalHeight", 0)) or 0,
+            total_volume_m3=p.get("total_volume_m3", p.get("totalVolume", 0)) or 0,
+            fill_rate_pct=p.get("fill_rate_pct", p.get("fillRate", 0)) or 0,
             constraints=p.get("constraints", []),
-            layout_data=p.get("layout"),
+            layout_data=p.get("layout_data", p.get("layout")),
         )
         db.add(pallet)
         await db.flush()
@@ -178,10 +181,10 @@ async def _save_pallets(db: AsyncSession, shipment_id: str, pallets_data: list):
                 pallet_id=pallet.id,
                 name=pr.get("name", ""),
                 quantity=pr.get("quantity", 1),
-                length_cm=pr.get("length", 0),
-                width_cm=pr.get("width", 0),
-                height_cm=pr.get("height", 0),
-                weight_kg=pr.get("weight", 0),
+                length_cm=pr.get("length_cm", pr.get("length", 0)) or 0,
+                width_cm=pr.get("width_cm", pr.get("width", 0)) or 0,
+                height_cm=pr.get("height_cm", pr.get("height", 0)) or 0,
+                weight_kg=pr.get("weight_kg", pr.get("weight", 0)) or 0,
                 constraints=pr.get("constraints", []),
                 position_x=pr.get("pos_x") or pr.get("position_x"),
                 position_y=pr.get("pos_y") or pr.get("position_y"),
@@ -665,24 +668,43 @@ async def _run_optimization(shipment_id: str, engine_params: dict = None, vehicl
             if not engine_meta:
                 engine_meta = (shipment.meta or {}).get("engine_params", {}) if hasattr(shipment, 'meta') and shipment.meta else {}
 
-            # ── Araç yükseklik limitini hesapla ──
-            # Seçili araçların en küçük iç yüksekliği → palet yükseklik üst sınırı
-            if vehicle_ids and "vehicleMaxHeightCm" not in engine_meta:
+            # ── Araç yükseklik limitini hesapla — siparişin ARAÇ KISITINA göre ──
+            # KRİTİK: Eskiden TÜM aktif araçların en küçüğü alınıyordu (örn. 180cm panelvan) →
+            # paletler gereksiz alçalıp sayı patlıyordu (153 yerine 122). Doğrusu: sipariş
+            # "tir_standart"a kısıtlıysa paleti TIR yüksekliğine (270cm) göre kur → çok daha dolu/az palet.
+            if "vehicleMaxHeightCm" not in engine_meta:
                 try:
-                    from app.models import VehicleDefinition
-                    vd_result = await db.execute(
-                        select(VehicleDefinition.height_cm).where(
-                            VehicleDefinition.company_id == shipment.company_id,
-                            VehicleDefinition.is_active == True,  # noqa: E712
-                        )
+                    from app.models import VehicleDefinition, OrderShipment, Order as _Order
+                    # Sevkiyatın siparişlerinin araç-tipi kısıtı kesişimi (hepsi kısıtlıysa)
+                    order_ids = [r[0] for r in (await db.execute(
+                        select(OrderShipment.order_id).where(OrderShipment.shipment_id == shipment_id)
+                    )).fetchall()]
+                    allowed_types = set()
+                    if order_ids:
+                        per_order = [set(a) for a in (await db.execute(
+                            select(_Order.allowed_vehicle_types).where(_Order.id.in_(order_ids))
+                        )).scalars().all() if a]
+                        if per_order and len(per_order) == len(order_ids):
+                            allowed_types = set.intersection(*per_order)
+
+                    vq = select(VehicleDefinition.height_cm).where(
+                        VehicleDefinition.company_id == shipment.company_id,
+                        VehicleDefinition.is_active == True,  # noqa: E712
                     )
-                    db_vehicle_heights = [row[0] for row in vd_result.fetchall() if row[0]]
+                    if allowed_types:   # yalnızca izin verilen tipleri dikkate al
+                        vq = vq.where(or_(
+                            VehicleDefinition.code.in_(allowed_types),
+                            VehicleDefinition.type.in_(allowed_types),
+                        ))
+                    db_vehicle_heights = [row[0] for row in (await db.execute(vq)).fetchall() if row[0]]
                     if db_vehicle_heights:
+                        # Paletler bu araç kümesinin EN KÜÇÜĞÜNE sığmalı (hepsi taşıyabilsin)
                         min_vehicle_h = min(db_vehicle_heights)
                         engine_meta["vehicleMaxHeightCm"] = min_vehicle_h
-                        logger.info(f"Araç yükseklik limiti: {min_vehicle_h}cm (en küçük aktif araç)")
+                        logger.info("Araç yükseklik limiti: %scm (kısıt: %s)",
+                                    min_vehicle_h, sorted(allowed_types) if allowed_types else "yok → tüm aktif")
                 except Exception:
-                    pass  # DB'de araç tablosu yoksa devam
+                    logger.exception("[Optimize] araç yükseklik limiti hesaplanamadı")
 
             opt_params = OptimizationParams.from_dict(engine_meta)
 

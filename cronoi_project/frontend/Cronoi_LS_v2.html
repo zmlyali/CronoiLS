@@ -786,7 +786,9 @@
         }
 
         @media print {
-            .sr-overlay { display: block !important; position: static; padding: 0; background: none; }
+            /* Özet Rapor modalı açıkken: yalnızca raporu bas, arkadaki uygulamayı gizle */
+            body:has(.sr-overlay.open) > *:not(.sr-overlay) { display: none !important; }
+            .sr-overlay.open { display: block !important; position: static; padding: 0; background: none; }
             .sr-box { box-shadow: none; border-radius: 0; max-width: 100%; }
             .sr-topbar-actions { display: none !important; }
             .sr-topbar { background: #1a1f2e !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -895,11 +897,6 @@
         .ship-detail-tabs .sdt-tab.active { color: #C84259; border-bottom-color: #C84259; }
         .ship-detail-body { flex: 1; overflow-y: auto; padding: 24px; }
 
-        /* ── Report Print Styles ── */
-        @media print {
-            body > *:not(.print-report) { display: none !important; }
-            .print-report { display: block !important; position: static; }
-        }
 
         /* ══════════════════════════════════════════
            OPTIMIZATION RESULT OVERLAY — Dark / Red
@@ -1630,6 +1627,7 @@
                     <div id="orders-summary-line" style="font-size:.78rem;color:#888;margin-top:2px"></div>
                 </div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button onclick="_aiToggle()" title="Cronoi AI Asistan — siparişlerle konuş, maliyet sor" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-size:.83rem;font-weight:700;cursor:pointer">🤖 Asistan</button>
                     <button onclick="openNewOrderModal()" style="background:linear-gradient(135deg,#C84259,#8C1A2E);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-size:.83rem;font-weight:600;cursor:pointer">
                         <i class="bi bi-plus-circle"></i> Yeni Sipariş
                     </button>
@@ -1687,6 +1685,7 @@
                             <option value="city_customer">Şehir + Müşteri</option>
                             <option value="week">Hafta Bazlı</option>
                             <option value="month">Ay Bazlı</option>
+                            <option value="consolidation">🔗 Tasarruf No</option>
                         </select>
                     </div>
 
@@ -1984,6 +1983,7 @@
                     </div>
                     <div id="canvas-container">
                         <div class="canvas-controls">
+                            <button class="canvas-btn" onclick="_aiToggle()" title="AI Asistan — palet/maliyet soruları" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;font-weight:700">🤖 Asistan</button>
                             <button class="canvas-btn" onclick="resetCamera()">
                                 <i class="bi bi-arrow-clockwise"></i> Sıfırla
                             </button>
@@ -2234,6 +2234,7 @@
                     </div>
                     <div id="truck-selector" style="display:flex;gap:8px;flex-wrap:wrap"></div>
                     <div style="display:flex;gap:8px;flex-wrap:wrap">
+                        <button class="btn btn-sm" onclick="_aiToggle()" title="AI Asistan — maliyet, bir tır daha, yükleme soruları" style="background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;font-weight:700">🤖 Asistan</button>
                         <button class="btn btn-sm btn-outline-primary" onclick="resetTruckCamera()">
                             <i class="bi bi-arrow-clockwise"></i> Sıfırla
                         </button>
@@ -3175,6 +3176,7 @@
                     targetFillRatePct:    85,  // % — doluluk hedefi
                     usableVolumeFactorPct: 90, // % — usable_volume_m3 tanımsızsa brüt iç hacmin bu oranı kullanılabilir sayılır
                     minSupportRatioPct:   70, // % — istiflenen kutu tabanının min destek oranı (stabilite; altı boşsa devrilir)
+                    optimizerTimeBudgetMs: 3000, // ms — backend zemin-duyarlı GRASP araç araması süre bütçesi (tavan 5000)
                     preferFewerPallets: true,  // daha az palet tercih et
                     maxVoidGapCm:        15,   // cm — CTU Code boşluk limiti
                     packagingEnabled:  false,   // McKee BCT ambalaj hesabı
@@ -6304,20 +6306,28 @@
                 const oris = [{ along: it.l, across: it.w, rot: 0 }];
                 if (Math.abs(it.l - it.w) > EPS) oris.push({ along: it.w, across: it.l, rot: 90 });
 
-                // ── Bottom-Left + YAN YANA dizilim (gerçek araç yüklemesi gibi) ──
-                // ÖNCE ön (küçük x = boy ekseni), sonra yan (küçük z = en ekseni), eşitlikte DAR across
-                // (ene daha çok palet → yan yana sıralar). NOT: eski Best-Short-Side-Fit parçayı döndürüp
-                // eni TEK paletle "sıkı" dolduruyordu (örn. 108×210 → 210 ene) → tek sıra, dikey istif.
-                // BL doğal satırlar üretir: eni paletlerle doldurur, sonra boya ilerler.
-                let best = null;   // {rx, rz, along, across, rot}
+                // ── Bottom-Left + EN-DOLDURAN yönelim (gerçek araç yüklemesi gibi) ──
+                // ÖNCE ön (küçük x = boy ekseni), sonra yan (küçük z = en ekseni). Aynı konumda yönelim
+                // seçimi: ENİ EN AZ İSRAF eden (= boştaki şeridi en aza indiren) yönelim. Örn. 95×230 palet
+                // 245cm araçta: 95 ene → 2 yan yana ama 53cm ÖLÜ ŞERİT (5 sıra=10 palet); 230 ene → 13cm fire
+                // (14 sıra=14 palet) → çok daha yoğun. Eşit fire → daha çok yan yana → dar across.
+                // NOT: eski "sadece dar across" ölçütü, uzun kenarı ene koyup şeridi bitirmenin daha iyi
+                // olduğu durumları (kanepe/headboard türevleri) GÖRMÜYORDU; width-fill bunu çözer.
+                let best = null;   // {rx, rz, along, across, rot, wWaste, wCnt}
                 for (const r of free) {
                     for (const o of oris) {
                         if (o.along <= r.l + EPS && o.across <= r.w + EPS) {
-                            if (!best ||
+                            const wCnt = Math.floor((r.w + EPS) / o.across);   // bu rect enine kaç yan yana sığar
+                            const wWaste = r.w - wCnt * o.across;              // kalan en firesi (şerit)
+                            const better = !best ||
                                 r.x < best.rx - EPS ||
                                 (Math.abs(r.x - best.rx) < EPS && r.z < best.rz - EPS) ||
-                                (Math.abs(r.x - best.rx) < EPS && Math.abs(r.z - best.rz) < EPS && o.across < best.across - EPS)) {
-                                best = { rx: r.x, rz: r.z, along: o.along, across: o.across, rot: o.rot };
+                                (Math.abs(r.x - best.rx) < EPS && Math.abs(r.z - best.rz) < EPS &&
+                                  (wWaste < best.wWaste - EPS ||                                   // en az şerit israfı
+                                   (Math.abs(wWaste - best.wWaste) < EPS && wCnt > best.wCnt) ||   // eşitse daha çok yan yana
+                                   (Math.abs(wWaste - best.wWaste) < EPS && wCnt === best.wCnt && o.across < best.across - EPS)));
+                            if (better) {
+                                best = { rx: r.x, rz: r.z, along: o.along, across: o.across, rot: o.rot, wWaste, wCnt };
                             }
                         }
                     }
@@ -6382,6 +6392,8 @@
             if (tc.some(c => c === 'must_bottom')) return false;
             const bf = _palletFootprint(bottom), tf = _palletFootprint(top);   // metre
             if (tf.w > bf.w * 1.02 + 1e-6 || tf.l > bf.l * 1.02 + 1e-6) return false;  // üst, alttan büyük olamaz
+            // AĞIR ALTA: daha ağır palet, daha hafif paletin ÜSTÜNE konmaz (ezilme/devrilme önlemi)
+            if ((top.totalWeight || 0) > (bottom.totalWeight || 0) + 1e-6) return false;
             return _palletPhysHcm(top) <= remainingHcm + 1e-6;
         }
         // Paletleri araç İÇ YÜKSEKLİĞİNE göre dikey SÜTUNLARA (istif) böl.
@@ -6390,7 +6402,9 @@
             // Aynı footprint yan yana + yüksek/ağır alta: footprint anahtarına sonra yüksekliğe göre sırala
             const fkey = p => { const f = _palletFootprint(p); return Math.round(f.w * 100) + 'x' + Math.round(f.l * 100); };
             const sorted = [...pallets].sort((a, b) =>
-                fkey(a).localeCompare(fkey(b)) || _palletPhysHcm(b) - _palletPhysHcm(a));
+                fkey(a).localeCompare(fkey(b)) ||
+                ((b.totalWeight || 0) - (a.totalWeight || 0)) ||   // ağır palet önce → sütun TABANI (ağır alta)
+                _palletPhysHcm(b) - _palletPhysHcm(a));
             const cols = [];
             for (const p of sorted) {
                 let placed = false;
@@ -8507,8 +8521,8 @@
             </div>`;
 
             scenario.vehicles.forEach((v, vi) => {
-                const pallets = (v.assignedPallets || []).map(pid =>
-                    APP.state.pallets.find(p => p.id === pid)).filter(Boolean);
+                // Yükleme sırasına göre sırala (3D yükleme dizisiyle aynı sıra)
+                const pallets = sortPalletsForLoading(v.assignedPallets || []);
                 const vWeight = pallets.reduce((s,p) => s + p.totalWeight, 0);
                 const vTypes = APP.config.vehicleTypes;
                 const vtKey = Object.keys(vTypes).find(k => vTypes[k].name === v.name) || '';
@@ -8530,7 +8544,9 @@
                     <table style="width:100%;border-collapse:collapse;font-size:.8rem">
                         <thead>
                             <tr style="background:#f8f9fa">
+                                <th style="padding:8px 12px;text-align:center;border-bottom:2px solid #e0e0e0">Sıra</th>
                                 <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e0e0e0">Palet</th>
+                                <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e0e0e0">Pozisyon</th>
                                 <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e0e0e0">Tip</th>
                                 <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e0e0e0">Ürünler</th>
                                 <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e0e0e0">Parça</th>
@@ -8552,8 +8568,11 @@
                     const prods = p.products.map(pr => `${pr.name}${pr.product_code?` (${pr.product_code})`:''} ×${pr.quantity}`).join(', ');
                     const cns   = (p.constraints||[]).map(c => { const d=CPOOL.byCode(c); return d ? d.icon+' '+d.name : c; }).join(', ');
                     const bg    = pi % 2 === 0 ? '#fff' : '#fafcff';
+                    const pos   = calculateLoadingPosition(pi, v);
                     html += `<tr style="background:${bg}">
+                        <td style="padding:8px 12px;text-align:center;font-weight:800;color:#C84259;border-bottom:1px solid #eee">${pi+1}</td>
                         <td style="padding:8px 12px;font-weight:700;border-bottom:1px solid #eee">#${p.id}</td>
+                        <td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:.75rem;color:#555">${pos}</td>
                         <td style="padding:8px 12px;border-bottom:1px solid #eee">${pType}</td>
                         <td style="padding:8px 12px;border-bottom:1px solid #eee;max-width:280px;word-wrap:break-word">${prods}</td>
                         <td style="padding:8px 12px;text-align:right;border-bottom:1px solid #eee">${totalPcs}</td>
@@ -8630,13 +8649,32 @@
         }
 
         function printVehiclePlanReport() {
-            const content = document.getElementById('vehicle-plan-report-content')?.innerHTML;
-            if (!content) return;
-            const w = window.open('','','width=900,height=700');
-            w.document.write(`<html><head><title>Araç Planı Raporu</title>
-                <style>body{font-family:Segoe UI,sans-serif;padding:20px}table{width:100%;border-collapse:collapse}th,td{padding:6px 10px;border:1px solid #ddd;font-size:12px}th{background:#f0f0f0}@media print{body{padding:0}}</style></head>
+            // İçerik henüz üretilmemişse (Step 5'e girilmeden çağrılırsa) şimdi üret
+            let el = document.getElementById('vehicle-plan-report-content');
+            if (el && !el.innerHTML.trim()) renderVehiclePlanReport();
+            const content = el?.innerHTML;
+            if (!content) {
+                if (UI?.toast) UI.toast('Araç planı raporu boş — önce araç planı oluşturun', 'warn');
+                else alert('Araç planı raporu boş.');
+                return;
+            }
+
+            const refNo = APP.state.shipmentRefNo || 'TASLAK';
+            const w = window.open('', '_blank');
+            if (!w) { alert('Yazdırma penceresi açılamadı. Lütfen tarayıcınızda bu site için pop-up engelleyiciyi kapatın.'); return; }
+
+            w.document.write(`<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8">
+                <title>Araç Planı Raporu — ${refNo}</title>
+                <style>
+                    *{box-sizing:border-box}
+                    body{font-family:'Segoe UI',sans-serif;padding:20px;color:#222;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+                    table{width:100%;border-collapse:collapse}
+                    th,td{font-size:12px}
+                    @media print{body{padding:0}@page{size:landscape;margin:10mm}}
+                </style></head>
                 <body>${content}</body></html>`);
-            w.document.close(); w.print();
+            w.document.close();
+            w.setTimeout(() => w.print(), 300);
         }
 
         async function exportVehiclePlanExcel() {
@@ -8666,8 +8704,8 @@
 
             let row = 3;
             scenario.vehicles.forEach((v, vi) => {
-                const pallets = (v.assignedPallets || []).map(pid =>
-                    APP.state.pallets.find(p => p.id === pid)).filter(Boolean);
+                // Yükleme sırasına göre sırala (PDF raporuyla aynı sıra)
+                const pallets = sortPalletsForLoading(v.assignedPallets || []);
                 pallets.forEach((p, pi) => {
                     const r = ws.getRow(row);
                     r.getCell(1).value = pi === 0 ? `${v.name || 'Araç '+(vi+1)}` : '';
@@ -9211,6 +9249,22 @@
                 ? 'Tüm araç tipleri karşılaştırıldı. Seçilen senaryo global minimum maliyete ulaştı.'
                 : `Tüm araç tipleri karşılaştırıldı. Seçilen otomatik senaryo, en ucuz araç tipiyle %${gapNum.toFixed(1)} fark var. Aşağıdaki tablodan farklı bir araç tipi seçerek maliyeti düşürebilirsiniz.`;
 
+            // ── Backend solver metadatası (ALNS · iterasyon · kanıtlanmış optimum) ──
+            const _solverSc = _autoSc.find(s => s.isRecommended) || _autoSc[0] || {};
+            const _isAlns = typeof _solverSc.engine === 'string' && _solverSc.engine.indexOf('floor-aware') === 0;
+            const _solverChip = _isAlns ? (() => {
+                const it = _solverSc.iterations || 0;
+                const proven = _solverSc.provenOptimal;
+                const lb = _solverSc.lowerBound;
+                const pColor = proven ? '#1D9E75' : '#BA7517';
+                const pLabel = proven
+                    ? `✓ Kanıtlanmış optimum (alt-sınır ${lb})`
+                    : `En iyi bulunan (alt-sınır ${lb}${lb ? '' : ''})`;
+                return `<span title="Backend zemin-duyarlı ALNS arama motoru — ${it} iterasyon denendi"
+                    style="font-size:.72rem;background:${pColor}1a;color:${pColor};padding:2px 9px;border-radius:10px;border:1px solid ${pColor}44;font-weight:700">
+                    🔎 ALNS · ${it} iter · ${pLabel}</span>`;
+            })() : '';
+
             const banner = document.getElementById('opt-engine-banner');
             if (banner) {
                 banner.innerHTML = `
@@ -9219,6 +9273,7 @@
                         <div style="flex:1;min-width:0">
                             <div style="font-weight:700;font-size:.82rem;color:${eColor}">${eTitle} · ${engineInfo.algorithm}${engineInfo.durationMs ? ' · ⏱ ' + engineInfo.durationMs + ' ms' : ''}</div>
                         </div>
+                        ${_solverChip}
                         <div style="display:flex;align-items:center;gap:8px">
                             <span style="font-size:.72rem;color:var(--clr-text-2,#777)">Global Optimale Yakınlık:</span>
                             <span title="${gapTitle}" style="font-size:.78rem;background:${gapColor}22;color:${gapColor};padding:2px 9px;border-radius:10px;border:1px solid ${gapColor}44;font-weight:700;cursor:help">%${optGap === '0' ? '100' : (100 - parseFloat(optGap)).toFixed(0)} — ${gapLabel}</span>
@@ -11089,13 +11144,18 @@
         }
 
         function updatePalletInfo() {
-            APP.state.selectedPalletType = document.getElementById('palletTypeSelect').value;
-            const pallet = APP.config.palletTypes[APP.state.selectedPalletType];
-            
-            document.getElementById('pallet-dimensions').textContent = `${pallet.width} x ${pallet.length} cm`;
-            document.getElementById('pallet-area').textContent = `${pallet.area} m²`;
-            document.getElementById('pallet-max-height').textContent = `${pallet.maxHeight} cm`;
-            document.getElementById('pallet-max-weight').textContent = `${pallet.maxWeight} kg`;
+            // Null-güvenli: 'palletTypeSelect' ve bilgi alanları her sayfada bulunmayabilir
+            // (bulunmazsa _startApp çökerdü → sonraki init adımları çalışmazdı).
+            const sel = document.getElementById('palletTypeSelect');
+            if (sel && sel.value) APP.state.selectedPalletType = sel.value;
+            const pallet = APP.config.palletTypes[APP.state.selectedPalletType]
+                        || Object.values(APP.config.palletTypes)[0];
+            if (!pallet) return;
+            const _set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+            _set('pallet-dimensions', `${pallet.width} x ${pallet.length} cm`);
+            _set('pallet-area', `${pallet.area} m²`);
+            _set('pallet-max-height', `${pallet.maxHeight} cm`);
+            _set('pallet-max-weight', `${pallet.maxWeight} kg`);
         }
 
         function switchStep(step) {
@@ -11154,16 +11214,21 @@
         }
 
         async function approvePalletsAndContinue() {
-            // Manuel palet atamalarını kaydet
-            if (APP.state.apiMode && APP.state.shipmentId && APP.state.pallets.length) {
+            // KRİTİK: NORMAL API siparişinde backend /optimize paletleri 3D POZİSYONLARIYLA zaten
+            // kaydetti. FE re-save'i (pozisyon içermeyen payload) bunların üzerine yazıp pozisyonları
+            // SIFIRLIYORDU → 3D'de origin'de kule/ters görünüm. ÇÖZÜM: normalde re-save ATLA (backend
+            // otorite). PREPACK paletleri /optimize ile oluşmaz → onları POZİSYONLARLA kaydet.
+            const _isPrepack = (APP.state.pallets || []).some(p => p.source === 'prepack');
+            if (APP.state.apiMode && APP.state.shipmentId && APP.state.pallets.length && _isPrepack) {
                 const palletPayload = APP.state.pallets.map(p => ({
                     pallet_number: p.id,
-                    pallet_type: p.type || 'euro',
+                    pallet_type: p.palletCode || p.type || 'PP',
                     total_weight_kg: p.totalWeight || 0,
                     total_height_cm: p.totalHeight || 0,
                     total_volume_m3: p.totalVolume || 0,
                     fill_rate_pct: calculatePalletFillRate(p),
                     constraints: p.constraints || [],
+                    layout_data: p.layout_data || (Array.isArray(p.placedItems) && p.placedItems.length ? { placed_items: p.placedItems } : null),
                     products: (p.products || []).map(pr => ({
                         name: pr.name,
                         quantity: pr.quantity,
@@ -11172,10 +11237,15 @@
                         height_cm: pr.height,
                         weight_kg: pr.weight,
                         constraints: (pr.constraints || []).map(c => typeof c === 'string' ? c : c.code),
+                        pos_x: pr.pos_x, pos_y: pr.pos_y, pos_z: pr.pos_z, rotated: pr.rotated || false,
                     })),
                 }));
-                API.post(`/shipments/${APP.state.shipmentId}/pallets`, { pallets: palletPayload })
-                    .catch(err => console.warn('[approvePallets] save pallets', err));
+                // Backend bu uçta BARE LİSTE bekler (pallets: list = Body(...)) → düz dizi gönder.
+                API.post(`/shipments/${APP.state.shipmentId}/pallets`, palletPayload)
+                    .then(() => console.info('[approvePallets] prepack paletleri kaydedildi (pozisyonlu):', palletPayload.length))
+                    .catch(err => console.error('[approvePallets] save pallets HATA:', err.status, err.message));
+            } else if (APP.state.apiMode && APP.state.shipmentId) {
+                console.info('[approvePallets] normal sipariş → backend /optimize paletleri korunuyor (re-save atlandı)');
             }
 
             // ── StatusManager ile tüm siparişleri pallet_planned yap ──
@@ -11895,7 +11965,14 @@
         // Offline/local modda çalışmaya devam eder
         // ============================================================
         const API = {
-            baseUrl: window.__CRONOI_API_URL__ || 'http://localhost:8000/api/v1',
+            // SAME-ORIGIN: sayfa hangi adresten servis edildiyse (localhost VEYA 127.0.0.1)
+            // API de oradan çağrılır → CORS hatası imkânsız. Yalnızca file:// veya farklı portta
+            // açılırsa localhost:8000'e düşer. (Eskiden sabit 'localhost' idi; sayfa 127.0.0.1'den
+            // açılınca cross-origin olup CORS engelliyordu.)
+            baseUrl: window.__CRONOI_API_URL__
+                || ((location.protocol === 'http:' || location.protocol === 'https:')
+                        ? location.origin + '/api/v1'
+                        : 'http://localhost:8000/api/v1'),
             token: null,
             _online: null,   // null=bilinmiyor, true/false=test edildi
 
@@ -11930,7 +12007,9 @@
                     const msg = Array.isArray(err.detail)
                         ? err.detail.map(e => `${(e.loc||[]).slice(-1)[0]||'?'}: ${e.msg}`).join(' · ')
                         : (err.detail || `HTTP ${r.status}`);
-                    throw new Error(msg);
+                    const e = new Error(msg);
+                    e.status = r.status; e.detail = err.detail;   // tanılama için
+                    throw e;
                 }
                 if (r.status === 204) return null;
                 return r.json();
@@ -12443,14 +12522,25 @@
                 });
 
                 // 2) Optimizasyonu başlat
-                // Araç yükseklik limitini hesapla — seçili araçların en küçük iç yüksekliği
+                // Palet yükseklik limitini siparişin İZİN VERDİĞİ araçlara göre hesapla.
+                // KRİTİK: Eskiden TÜM araçların min'i (180cm panelvan) alınıyordu → tir_standart
+                // siparişte paletler gereksiz alçalıp sayı patlıyordu (153 yerine 122). Sipariş
+                // tir_standart'a kısıtlıysa yüksekliği TIR'a (270cm) göre kur → çok daha dolu/az palet.
                 const engineParams = { ...APP.config.engine };
                 if (APP.state.vehicles.length > 0) {
-                    const vehicleHeights = APP.state.vehicles
+                    const _allowedSet = _computeEffectiveAllowedVehicleTypes();   // Set<code> | null
+                    let _vehSrc = APP.state.vehicles;
+                    if (_allowedSet && _allowedSet.size) {
+                        const f = APP.state.vehicles.filter(v => _allowedSet.has(v.code) || _allowedSet.has(v.type));
+                        if (f.length) _vehSrc = f;
+                    }
+                    const vehicleHeights = _vehSrc
                         .map(v => v.height || (APP.config.vehicleTypes[v.code || v.type] || {}).height)
                         .filter(h => h > 0);
                     if (vehicleHeights.length > 0) {
                         engineParams.vehicleMaxHeightCm = Math.min(...vehicleHeights);
+                        console.info('[Optim] palet yükseklik limiti=%dcm (kısıt: %s)',
+                            engineParams.vehicleMaxHeightCm, _allowedSet ? [..._allowedSet].join(',') : 'yok');
                     }
                 }
 
@@ -12654,15 +12744,16 @@
             if (!APP.state.pallets.length) { alert('Önce paletleri oluşturun!'); switchStep(2); return; }
             if (!APP.state.vehicles.length) { loadDefaultVehicles(); }
 
-            // Pre-pack: paletler hazır (ürün→palet adımı yok). Backend ScenarioOptimizer DİKEY İSTİF,
-            // gerçek zemin yerleşimi ve araç-tipi kısıtını UYGULAMIYOR (hacim+sabit kapasite). Tüm bu
-            // mantık frontend local yolunda (_evalAllFleets: istif + kısıt + yükseklik). Bu yüzden
-            // pre-pack'i local fleet optimizasyonuna yönlendiriyoruz → konteyner + istif + doğru sayı.
-            const isPrepack = (APP.state.pallets || []).some(p => p.source === 'prepack');
-
-            if (APP.state.apiMode && APP.state.shipmentId && !isPrepack) {
+            // Backend artık zemin-duyarlı + dikey istif + araç-kısıtı + GRASP arama yapıyor
+            // (fleet_packer.py — FE motorunun portu). Bu yüzden prepack DAHİL tüm API
+            // siparişleri backend'e gider; prepack paletleri payload ile gönderilir (DB'de yok).
+            console.info('[autoOptimize] apiMode=%s shipmentId=%s → %s',
+                APP.state.apiMode, APP.state.shipmentId,
+                (APP.state.apiMode && APP.state.shipmentId) ? 'BACKEND (/scenarios/generate)' : 'YEREL (FFD)');
+            if (APP.state.apiMode && APP.state.shipmentId) {
                 await _autoOptimizeAPI();
             } else {
+                UI.toast('⚠ API moduna bağlı değil (apiMode/shipmentId yok) → yerel FFD. Backend sonucu için sevkiyatı API üzerinden açın.', 'warning', 6000);
                 _autoOptimizeLocal();
             }
         }
@@ -12712,10 +12803,12 @@
                     shipment_id:   APP.state.shipmentId,
                     allowed_vehicle_types: allowedSet ? [...allowedSet] : [],
                     vehicle_configs: vehSource.map(v => ({
-                        id:           v.id || String(v.type + '_' + v.name),
-                        code:         v.code || v.type || '',
-                        name:         v.name,
-                        type:         v.type,
+                        // Backend şeması id/code/name/type'ı STRING bekler → tümünü String'e zorla
+                        // (v.id sayısal olabiliyordu → 422 "id: Input should be a valid string").
+                        id:           String(v.id || (v.type + '_' + v.name)),
+                        code:         String(v.code || v.type || ''),
+                        name:         String(v.name || ''),
+                        type:         String(v.type || ''),
                         length_cm:    v.length,
                         width_cm:     v.width,
                         height_cm:    v.height,
@@ -12734,6 +12827,29 @@
                         return ep;
                     })(),
                 };
+
+                // ── PREPACK: paletler DB'de yok → footprint+stackable ile payload'a ekle ──
+                // Backend bu paletlerle aynı zemin-duyarlı GRASP motorunu (aynı ayarlar) çalıştırır.
+                const isPrepack = (APP.state.pallets || []).some(p => p.source === 'prepack');
+                if (isPrepack) {
+                    payload.pallets = APP.state.pallets.map(p => {
+                        const f = _palletFootprint(p);   // metre → cm
+                        return {
+                            pallet_number:   p.id,
+                            pallet_type:     p.palletCode || p.type || 'PP',
+                            total_weight_kg: p.totalWeight || 0,
+                            total_height_cm: p.totalHeight || 0,
+                            total_volume_m3: p.totalVolume || 0,
+                            fill_rate_pct:   100,
+                            constraints:     p.constraints || [],
+                            footprint_w_cm:  +(f.w * 100).toFixed(1),
+                            footprint_l_cm:  +(f.l * 100).toFixed(1),
+                            phys_height_cm:  p.totalHeight || 0,   // prepack yüksekliği taban dahil
+                            stackable:       p.stackable !== false,
+                            source:          'prepack',
+                        };
+                    });
+                }
 
                 UI.showProgress('Senaryo Analizi', 'Minimum araç senaryosu...', 30);
                 const result = await API.post('/scenarios/generate', payload);
@@ -12754,11 +12870,17 @@
                         palletFillRate: s.pallet_fill_rate_pct?.toFixed(1) || '0',
                         isRecommended: s.is_recommended || false,
                         engineUsed:    'api',
+                        engine:        s.engine || '',
+                        lowerBound:    s.lower_bound,
+                        provenOptimal: s.proven_optimal,
+                        iterations:    s.iterations,
                         loadedVolume:  +loadedVol.toFixed(2),
                         totalVolume:   +totalVol.toFixed(2),
                     };
-                    // Zemin-fit güvenlik: backend hacim-bazlı atamayı zemin-aware yeniden dağıt (taşma önle)
-                    return _repackScenarioFloorAware(sObj);
+                    // Backend (zemin-duyarlı GRASP) atamasını KORU; her araç için sadece istif/cols üret.
+                    // Backend zemin-fit garantilediği için araçlar arası yeniden dağıtım GEREKMEZ → backend
+                    // otorite kalır (GRASP araması korunur). Sığmazsa güvenli _repackScenarioFloorAware fallback.
+                    return _honorBackendAssignment(sObj);
                 });
 
                 // ── CROSS-CHECK (katman 3): dönen senaryolar YALNIZCA gönderilen (izinli) araçları mı kullanıyor? ──
@@ -12796,8 +12918,12 @@
 
             } catch(err) {
                 UI.hideProgress();
-                console.warn('Senaryo API hatası, local moda geçiliyor:', err.message);
-                // Toast kaldırıldı — lokal senaryo hesaplaması sessizce devam eder
+                // GÖRÜNÜR HATA: backend sonucu ezilmesin diye sessiz fallback yerine net uyarı.
+                // (Kullanıcı "değişiklikler yansımıyor" derken asıl sebep buradaki API hatasıdır.)
+                console.error('[Senaryo API HATASI] /scenarios/generate başarısız → yerel FFD fallback.',
+                    '\nstatus:', err.status, '\nmesaj:', err.message, '\ndetay:', err.detail || err.body || err);
+                UI.toast(`🚫 Backend optimizasyonu başarısız (yerel FFD'ye düşüldü): ${err.status || ''} ${err.message || err}`.trim(),
+                    'error', 9000);
                 _autoOptimizeLocal();
             }
         }
@@ -12887,6 +13013,50 @@
         // yerel zemin-aware _buildFleetOfType ile YENİDEN dağıtır → hiçbir araç zemini aşmaz
         // (taşma yapısal olarak imkansız). Tek paketleme motoru korunur. usedLenCm/ldm/currentVolume
         // de dolar → hacim+LDM doğru. Local senaryo (zaten zemin-fit) için çağrılmasa da güvenli.
+        // Backend zemin-duyarlı GRASP atamasını KORU: her araç için yalnızca dikey istif + cols
+        // üret (render==kapasite), araçlar ARASI palet taşıma YAPMA → backend otorite kalır.
+        // Backend her araca yalnızca _packFloor-fit küme atadığı için burada da sığar; sığmazsa
+        // (footprint uyuşmazlığı vb.) güvenli olarak eski _repackScenarioFloorAware'e düşer.
+        function _honorBackendAssignment(scenario) {
+            if (!scenario || !Array.isArray(scenario.vehicles) || !scenario.vehicles.length) return scenario;
+            const gapCm = Math.min(APP.config.engine.palletGapCm ?? 1, 1);
+            const built = [];
+            let ok = true;
+            for (const v of scenario.vehicles) {
+                const code = v.code || v.type || 'tir';
+                const vtConfig = APP.config?.vehicleTypes?.[code] || {
+                    type: v.type || code, name: v.name, icon: v.icon,
+                    length: v.length, width: v.width, height: v.height,
+                    maxWeight: v.maxWeight, usableVolume: v.usableVolume, palletCapacity: v.palletCapacity,
+                };
+                const pals = (v.assignedPallets || []).map(id => APP.state.pallets.find(p => p.id === id)).filter(Boolean);
+                if (!pals.length) { ok = false; break; }
+                const cols = _stackPallets(pals, vtConfig.height);
+                const pf = _packFloor(cols.map((c, i) => ({ id: i, w: c.wCm, l: c.lCm, h: c.usedH })),
+                                      vtConfig.length, vtConfig.width, gapCm, 1);
+                if (pf.unplaced.length) { ok = false; break; }   // backend ataması zemine sığmadı
+                v.cols = cols;
+                v.palletObjs = pals;
+                v.assignedPallets = pals.map(p => p.id);
+                v.currentWeight = pals.reduce((s, p) => s + (p.totalWeight || 0), 0);
+                v.currentVolume = pals.reduce((s, p) => s + (p.totalVolume || 0), 0);
+                v.usedLenCm = pf.usedLenCm || 0;
+                v.ldm = +(v.usedLenCm / 100).toFixed(2);
+                v.ldmFillPct = vtConfig.length ? +(v.usedLenCm / vtConfig.length * 100).toFixed(1) : 0;
+                built.push(v);
+            }
+            if (ok && built.length) {
+                built.forEach((v, i) => { v.id = i + 1; });
+                scenario.vehicles = built;
+                scenario.totalVehicles = built.length;
+                scenario.fleetBreakdown = _getFleetBreakdown(built);
+                Object.assign(scenario, _calcFleetVolumes(built));
+                return scenario;
+            }
+            console.warn('[honor] backend ataması zemine sığmadı → _repackScenarioFloorAware fallback');
+            return _repackScenarioFloorAware(scenario);
+        }
+
         function _repackScenarioFloorAware(scenario) {
             if (!scenario || !Array.isArray(scenario.vehicles) || !scenario.vehicles.length) return scenario;
             // Araçları tipe göre grupla, her tipin TÜM paletlerini topla
@@ -12930,7 +13100,11 @@
             if (!scenario || !Array.isArray(scenario.vehicles) || !scenario.vehicles.length) return;
             const needs = scenario.vehicles.some(v => !Array.isArray(v.cols) || !v.cols.length);
             if (needs) {
-                _repackScenarioFloorAware(scenario);
+                // Backend (API) atamasını KORU: cols'u araç-içi üret, araçlar arası yeniden dağıtma.
+                // Kayıtlı/yeniden açılan senaryoda da backend otorite kalır (eskiden _repackScenarioFloorAware
+                // FE motorunu çalıştırıp backend sonucunu eziyordu → "değişiklik yansımıyor" kök nedeni).
+                // _honorBackendAssignment, atama zemine sığmazsa zaten güvenli _repackScenarioFloorAware'e düşer.
+                _honorBackendAssignment(scenario);
                 if (_selectedVehicleIdx >= scenario.vehicles.length) _selectedVehicleIdx = 0;
             }
         }
@@ -13395,6 +13569,7 @@
                     APP.config.engine.packagingEnabled      = savedEngine.packagingEnabled      ?? APP.config.engine.packagingEnabled;
                     APP.config.engine.enforceIspm15         = savedEngine.enforceIspm15         ?? APP.config.engine.enforceIspm15;
                     APP.config.engine.groupSameProducts     = savedEngine.groupSameProducts     ?? APP.config.engine.groupSameProducts;
+                    APP.config.engine.optimizerTimeBudgetMs = savedEngine.optimizerTimeBudgetMs ?? APP.config.engine.optimizerTimeBudgetMs;
                 }
             } catch(e) { /* localStorage parse hatası — varsayılanlar kulanılır */ }
         }
@@ -13779,7 +13954,12 @@
             try {
                 return await fn(...args);
             } catch(e) {
-                if (e.message && (e.message.includes('HTTP 401') || e.message.includes('401'))) {
+                // 401 tespiti: e.status (güvenilir) VEYA mesajda 401. Eskiden yalnız mesajda "401"
+                // aranıyordu; backend detail'i "Kimlik doğrulama başarısız" (içinde 401 yok) olunca
+                // otomatik yenileme TETİKLENMİYOR → token süresi dolunca istek 401 ile düşüyordu.
+                const is401 = (e && e.status === 401) ||
+                    (e.message && (e.message.includes('401') || e.message.includes('Kimlik doğrulama')));
+                if (is401) {
                     const refreshed = await AUTH.tryRefresh();
                     if (refreshed) return await fn(...args);
                     AUTH.clear();
@@ -13798,8 +13978,233 @@
         // ============================================================
         // INITIALIZATION
         // ============================================================
+        // ═══════════════════════════════════════════════════════════════════
+        // CRONOI AI ASİSTAN — verilerle konuş + maliyet what-if (Faz 1)
+        // Sağlayıcı-agnostik (şimdilik Ollama/local). LLM YALNIZCA tool çağırır; tüm sayılar
+        // mevcut deterministik motorlardan (_consolFleetOptions/_consolSavings/_orderWV) gelir → UYDURMAZ.
+        // ═══════════════════════════════════════════════════════════════════
+        const AI = { cfg: { provider: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b', maxTurns: 6 }, history: [], busy: false };
+        const AI_SYSTEM_PROMPT =
+            'Sen Cronoi LS lojistik yazılımının Türkçe AI asistanısın. Sipariş, konsolidasyon ve maliyet ' +
+            'sorularını yanıtlarsın. KURALLAR: (1) Herhangi bir sayı/sipariş/maliyet/hesap için MUTLAKA bir araç (tool) ' +
+            'çağır; ASLA sayı UYDURMA. (2) Kısa, net, Türkçe yanıt ver; rakamları ₺/kg/m³ birimiyle. (3) Aracın ' +
+            'döndürdüğü veriyi yorumla, kullanıcıya sade bir cümleyle aktar. (4) Veri yoksa/araç yoksa dürüstçe söyle.';
+
+        function _aiResolveOrders(f = {}) {
+            let os = (APP.state.orders || []).filter(o => !o.deleted_at);
+            if (f.status)           os = os.filter(o => o.status === f.status);
+            if (f.city)             os = os.filter(o => (o.city || '').toLowerCase().includes(String(f.city).toLowerCase()));
+            if (f.consolidation_no) os = os.filter(o => o.consolidation_no === f.consolidation_no);
+            if (Array.isArray(f.order_nos) && f.order_nos.length) os = os.filter(o => f.order_nos.includes(o.order_no));
+            if (f.urgent_only)      os = os.filter(o => (o.priority || 3) <= 2);
+            return os;
+        }
+        function _aiGroup(os) { let w = 0, v = 0; os.forEach(o => { const x = _orderWV(o); w += x.w; v += x.v; }); return { orders: os, total_weight_kg: w, total_volume_m3: v }; }
+
+        const AI_TOOLS = [
+            { name: 'get_orders_summary',
+              description: 'Siparişleri filtreler ve özet verir: adet, toplam ağırlık (kg) ve hacim (m³), şehir/durum dağılımı, eşleşen sipariş numaraları. "kaç sipariş", "Ankara siparişleri" gibi sorular.',
+              parameters: { type: 'object', properties: {
+                city: { type: 'string', description: 'Hedef şehir (kısmi eşleşir)' },
+                status: { type: 'string', description: 'draft/pending/ready/in_shipment/loaded' },
+                consolidation_no: { type: 'string', description: 'Tasarruf No (örn TAS-001)' },
+                urgent_only: { type: 'boolean', description: 'Sadece acil (öncelik ≤2)' } } },
+              run: (a) => { const os = _aiResolveOrders(a), g = _aiGroup(os), byCity = {}, byStatus = {};
+                os.forEach(o => { byCity[o.city || '—'] = (byCity[o.city || '—'] || 0) + 1; byStatus[o.status] = (byStatus[o.status] || 0) + 1; });
+                return { count: os.length, total_weight_kg: Math.round(g.total_weight_kg), total_volume_m3: +g.total_volume_m3.toFixed(1), by_city: byCity, by_status: byStatus, order_nos: os.slice(0, 30).map(o => o.order_no) }; } },
+
+            { name: 'estimate_cost',
+              description: 'Bir grup sipariş (veya verilen hacim/ağırlık) için her uygun araç tipinde araç sayısı, doluluk ve TAHMİNİ MALİYET (₺). "Ankara için maliyet ne olur" gibi sorular.',
+              parameters: { type: 'object', properties: {
+                city: { type: 'string' }, consolidation_no: { type: 'string' }, order_nos: { type: 'array', items: { type: 'string' } },
+                volume_m3: { type: 'number' }, weight_kg: { type: 'number' },
+                vehicle_type: { type: 'string', description: 'Belirli araç kodu (tir, konteyner40hc...). Boşsa hepsi.' } } },
+              run: (a) => { let g = (a.volume_m3 != null || a.weight_kg != null)
+                    ? { orders: [], total_volume_m3: a.volume_m3 || 0, total_weight_kg: a.weight_kg || 0 } : _aiGroup(_aiResolveOrders(a));
+                let opts = _consolFleetOptions(g);
+                if (a.vehicle_type) opts = opts.filter(o => o.code === a.vehicle_type || o.name.toLowerCase().includes(String(a.vehicle_type).toLowerCase()));
+                return { load: { volume_m3: +g.total_volume_m3.toFixed(1), weight_kg: Math.round(g.total_weight_kg), order_count: g.orders.length },
+                         options: opts.map(o => ({ vehicle: o.name, count: o.count, volume_fill_pct: Math.round(o.fill), ldm_fill_pct: Math.round(o.ldmFill), cost_try: o.cost })) }; } },
+
+            { name: 'what_if_extra_vehicle',
+              description: 'Mevcut en uygun filoya BİR (veya N) araç daha eklenirse ek maliyet ve doluluğun nasıl düşeceğini hesaplar. "Bir tır daha çağırsam maliyeti ne olur" sorusu.',
+              parameters: { type: 'object', properties: {
+                city: { type: 'string' }, consolidation_no: { type: 'string' }, order_nos: { type: 'array', items: { type: 'string' } },
+                vehicle_type: { type: 'string' }, extra_count: { type: 'number', description: 'Varsayılan 1' } } },
+              run: (a) => { const g = _aiGroup(_aiResolveOrders(a)), opts = _consolFleetOptions(g);
+                let base = a.vehicle_type ? (opts.find(o => o.code === a.vehicle_type) || opts[0]) : opts[0];
+                if (!base) return { error: 'Uygun araç bulunamadı (yük yok veya araç tipi yok).' };
+                const extra = Math.max(1, a.extra_count || 1), perVeh = base.cost / base.count, newCount = base.count + extra;
+                const newFill = Math.min(100, (g.total_volume_m3 / (newCount * base.usableVol)) * 100);
+                return { vehicle: base.name, current: { count: base.count, fill_pct: Math.round(base.fill), cost_try: base.cost },
+                         with_extra: { count: newCount, fill_pct: Math.round(newFill), cost_try: Math.round(newCount * perVeh) },
+                         extra_cost_try: Math.round(extra * perVeh), note: 'Ek araç doluluğu düşürür; yalnızca yük taşıyorsa gereklidir.' }; } },
+
+            { name: 'consolidation_savings',
+              description: 'Bir grup siparişi AYRI sevk etmek vs BİRLİKTE (konsolide) etmenin araç/maliyet farkını (tasarruf) verir.',
+              parameters: { type: 'object', properties: { city: { type: 'string' }, consolidation_no: { type: 'string' }, order_nos: { type: 'array', items: { type: 'string' } } } },
+              run: (a) => { const g = _aiGroup(_aiResolveOrders(a)); if (!g.orders.length) return { error: 'Eşleşen sipariş yok.' };
+                const s = _consolSavings(g); return s ? { separate: { trucks: s.sepTrucks, cost_try: s.sepCost }, together: { trucks: s.consolTrucks, cost_try: s.consolCost }, savings: { trucks: s.saveTrucks, cost_try: s.saveCost, co2_kg: s.saveCO2 } } : { error: 'Hesaplanamadı.' }; } },
+
+            { name: 'vehicle_catalog',
+              description: 'Sistemdeki araç tiplerini listeler: iç ölçü, kullanılabilir hacim, max ağırlık, sefer maliyeti.',
+              parameters: { type: 'object', properties: {} },
+              run: () => ({ vehicles: Object.entries(APP.config.vehicleTypes || {}).filter(([, v]) => v.is_active !== false).map(([code, vt]) => {
+                const dd = _getVehDefaults(vt.type || code);
+                const cost = Math.round((vt.baseCost ?? dd.base) + (vt.fuelPerKm ?? dd.fuel) * dd.dist + (vt.driverPerHour ?? dd.driver) * dd.dur + (vt.opportunityCost ?? dd.opp));
+                return { code, name: vt.name, interior_cm: `${vt.length}×${vt.width}×${vt.height}`, usable_vol_m3: +_vehUsableVol(vt).toFixed(1), max_weight_kg: vt.maxWeight, trip_cost_try: cost }; }) }) },
+        ];
+
+        // Bağlantı durumu: 'ok' (erişilebilir + CORS açık), 'cors' (Ollama ayakta ama tarayıcı engelliyor), 'down' (erişilemiyor).
+        async function _aiPing() {
+            try { const r = await fetch(AI.cfg.endpoint + '/api/tags'); return r.ok ? 'ok' : 'cors'; }
+            catch (e) {
+                // Normal fetch patladı: CORS mu, sunucu kapalı mı? no-cors ile ayırt et — sunucu erişilebilirse çözülür.
+                try { await fetch(AI.cfg.endpoint + '/api/tags', { mode: 'no-cors' }); return 'cors'; }
+                catch (e2) { return 'down'; }
+            }
+        }
+
+        // Tool-calling döngüsü (Ollama /api/chat). LLM tool çağırır → JS'de çalıştır → sonucu geri besle → tekrar.
+        async function _aiSend(userText) {
+            if (!AI.history.length) AI.history.push({ role: 'system', content: AI_SYSTEM_PROMPT });
+            AI.history.push({ role: 'user', content: userText });
+            const toolDefs = AI_TOOLS.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+            for (let turn = 0; turn < AI.cfg.maxTurns; turn++) {
+                const res = await fetch(AI.cfg.endpoint + '/api/chat', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: AI.cfg.model, messages: AI.history, tools: toolDefs, stream: false }),
+                });
+                if (!res.ok) throw new Error('Ollama HTTP ' + res.status);
+                const data = await res.json();
+                const msg = data.message || {};
+                AI.history.push(msg);
+                const calls = msg.tool_calls || [];
+                if (!calls.length) return msg.content || '(boş yanıt)';
+                for (const c of calls) {
+                    const name = c.function && c.function.name;
+                    let args = c.function && c.function.arguments;
+                    if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = {}; } }
+                    const tool = AI_TOOLS.find(t => t.name === name);
+                    let result;
+                    try { result = tool ? tool.run(args || {}) : { error: 'Bilinmeyen araç: ' + name }; }
+                    catch (e) { result = { error: String((e && e.message) || e) }; }
+                    _aiRenderToolChip(name);
+                    AI.history.push({ role: 'tool', content: JSON.stringify(result) });
+                }
+            }
+            return 'Soru çok fazla adım gerektirdi — biraz daha sade sorar mısın?';
+        }
+
+        // ── UI ──
+        function _aiInjectUI() {
+            if (document.getElementById('ai-fab')) return;
+            const fab = document.createElement('div');
+            fab.id = 'ai-fab'; fab.textContent = '🤖'; fab.title = 'Cronoi AI Asistan';
+            fab.style.cssText = 'position:fixed;right:22px;bottom:22px;width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;font-size:1.5rem;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 10px 28px rgba(124,58,237,.4);z-index:9000';
+            fab.onclick = _aiToggle;
+            document.body.appendChild(fab);
+            const panel = document.createElement('div');
+            panel.id = 'ai-panel';
+            panel.style.cssText = 'position:fixed;right:22px;bottom:88px;width:380px;max-width:calc(100vw - 44px);height:520px;max-height:calc(100vh - 130px);background:#fff;border-radius:18px;box-shadow:0 20px 50px rgba(0,0,0,.25);z-index:9000;display:none;flex-direction:column;overflow:hidden';
+            panel.innerHTML =
+                '<div style="padding:13px 16px;background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;display:flex;justify-content:space-between;align-items:center">' +
+                  '<div><div style="font-weight:800">🤖 Cronoi Asistan</div><div id="ai-status" style="font-size:.66rem;opacity:.9">bağlanıyor…</div></div>' +
+                  '<div style="display:flex;gap:8px;align-items:center"><button onclick="_aiClear()" title="Sohbeti temizle" style="background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:7px;padding:4px 8px;cursor:pointer;font-size:.7rem">Temizle</button>' +
+                  '<button onclick="_aiToggle()" style="background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;line-height:1">×</button></div></div>' +
+                '<div id="ai-messages" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:9px;background:#faf9ff"></div>' +
+                '<div style="padding:10px;border-top:1px solid #eee;display:flex;gap:8px">' +
+                  '<input id="ai-input" placeholder="Örn: Ankara&#39;ya kaç sipariş, maliyeti ne?" onkeydown="if(event.key===&#39;Enter&#39;)_aiAsk()" style="flex:1;border:1.5px solid #e3e0f0;border-radius:10px;padding:9px 12px;font-size:.82rem;outline:none">' +
+                  '<button onclick="_aiAsk()" style="background:#7c3aed;color:#fff;border:none;border-radius:10px;padding:0 14px;cursor:pointer;font-weight:700;font-size:1rem">↑</button></div>';
+            document.body.appendChild(panel);
+        }
+        function _aiToggle() {
+            _aiInjectUI();
+            const p = document.getElementById('ai-panel');
+            const show = p.style.display === 'none' || !p.style.display;
+            p.style.display = show ? 'flex' : 'none';
+            if (show) {
+                if (!document.getElementById('ai-messages').children.length) _aiGreet();
+                _aiCheckConn();
+                setTimeout(() => document.getElementById('ai-input')?.focus(), 50);
+            }
+        }
+        async function _aiCheckConn() {
+            const el = document.getElementById('ai-status'); if (!el) return;
+            el.textContent = 'bağlanıyor…';
+            const st = await _aiPing();
+            if (st === 'ok') {
+                el.innerHTML = `● Bağlı · ${AI.cfg.model}`;
+                el.style.color = '#c6f6d5';
+            } else if (st === 'cors') {
+                el.innerHTML = '● Ollama ayakta ama tarayıcı engelliyor (CORS). Ollama’yı <b>OLLAMA_ORIGINS=*</b> ile yeniden başlatın ya da sayfayı <b>http://</b> üzerinden açın (file:// çalışmaz).';
+                el.style.color = '#ffe2b0';
+            } else {
+                el.innerHTML = '● Ollama kapalı — terminalde <b>ollama serve</b>';
+                el.style.color = '#ffd1d1';
+            }
+        }
+        function _aiGreet() {
+            _aiPushMsg('assistant', 'Merhaba! Verilerinle konuşabilirim. Örnekler:');
+            const ex = ['Ankara’ya kaç sipariş var?', 'Ankara için maliyet ne olur?', 'Bir tır daha çağırsam maliyeti ne olur?', 'TAS-001 grubunun tasarrufu ne?'];
+            const box = document.getElementById('ai-messages');
+            const chips = document.createElement('div');
+            chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
+            chips.innerHTML = ex.map(t => `<button onclick="_aiAsk(this.textContent)" style="background:#fff;border:1px solid #e3e0f0;color:#5b21b6;border-radius:20px;padding:5px 11px;font-size:.72rem;cursor:pointer">${t}</button>`).join('');
+            box.appendChild(chips);
+        }
+        function _aiPushMsg(role, text) {
+            const box = document.getElementById('ai-messages'); if (!box) return null;
+            const b = document.createElement('div');
+            const me = role === 'user';
+            b.style.cssText = `max-width:85%;padding:9px 12px;border-radius:13px;font-size:.82rem;line-height:1.45;white-space:pre-wrap;${me ? 'align-self:flex-end;background:#7c3aed;color:#fff;border-bottom-right-radius:4px' : 'align-self:flex-start;background:#fff;color:#1a1f2e;border:1px solid #ece9f6;border-bottom-left-radius:4px'}`;
+            b.textContent = text;
+            box.appendChild(b); box.scrollTop = box.scrollHeight;
+            return b;
+        }
+        function _aiRenderToolChip(name) {
+            const box = document.getElementById('ai-messages'); if (!box) return;
+            const map = { get_orders_summary: '📋 siparişler tarandı', estimate_cost: '💰 maliyet hesaplandı', what_if_extra_vehicle: '🚛 ek araç senaryosu', consolidation_savings: '🔗 tasarruf hesaplandı', vehicle_catalog: '🚚 araç kataloğu' };
+            const c = document.createElement('div');
+            c.style.cssText = 'align-self:flex-start;font-size:.66rem;color:#8a7fb5;background:#f1ecfb;border-radius:8px;padding:3px 9px';
+            c.textContent = '🔧 ' + (map[name] || name);
+            box.appendChild(c); box.scrollTop = box.scrollHeight;
+        }
+        async function _aiAsk(forced) {
+            const inp = document.getElementById('ai-input');
+            const text = (forced || (inp && inp.value) || '').trim();
+            if (!text || AI.busy) return;
+            if (inp) inp.value = '';
+            _aiPushMsg('user', text);
+            AI.busy = true;
+            const thinking = _aiPushMsg('assistant', '…');
+            try {
+                const ans = await _aiSend(text);
+                if (thinking) thinking.textContent = ans;
+            } catch (e) {
+                if (thinking) {
+                    const st = await _aiPing();
+                    if (st === 'cors') thinking.textContent = '⚠️ Ollama ayakta ama tarayıcı CORS nedeniyle engelliyor. Ollama’yı OLLAMA_ORIGINS=* ile yeniden başlatın ya da bu sayfayı http:// üzerinden açın (file:// çalışmaz). (' + ((e && e.message) || e) + ')';
+                    else if (st === 'down') thinking.textContent = '⚠️ Ollama’ya ulaşılamadı. Terminalde "ollama serve" çalışıyor mu ve "ollama pull ' + AI.cfg.model + '" yapıldı mı? (' + ((e && e.message) || e) + ')';
+                    else thinking.textContent = '⚠️ İstek başarısız: ' + ((e && e.message) || e);
+                }
+            } finally { AI.busy = false; const box = document.getElementById('ai-messages'); if (box) box.scrollTop = box.scrollHeight; }
+        }
+        function _aiClear() { AI.history = []; const box = document.getElementById('ai-messages'); if (box) box.innerHTML = ''; _aiGreet(); }
+
         async function _startApp() {
             try {
+                // KRİTİK: Sayfa dosya olarak (file://) açılırsa tarayıcı Origin'i "null" gönderir;
+                // backend CORS (http://localhost...) bunu reddeder → TÜM API çağrıları engellenir →
+                // optimizasyon yerel FFD'ye düşer (backend değişiklikleri yansımaz). Çözüm: uygulamayı
+                // backend'in servis ettiği http://localhost:8000/ adresinden aç.
+                if (location.protocol === 'file:') {
+                    console.error('[INIT] file:// ile açıldı → backend API CORS nedeniyle ENGELLİ. http://localhost:8000/ aç!');
+                    setTimeout(() => UI.toast(
+                        '⚠ Sayfa DOSYA olarak açıldı (file://). Backend optimizasyonu çalışmaz! ' +
+                        'uvicorn\'u başlatıp tarayıcıda http://localhost:8000/ adresini açın.',
+                        'error', 15000), 800);
+                }
                 await checkAndShowApiStatus();
                 console.log('[INIT] apiMode:', APP.state.apiMode);
                 await loadTransportUnits();
@@ -13817,6 +14222,7 @@
                 APP.state.loadingDate = today;
                 updateWeeklyPlan();
                 loadDashboard();
+                _aiInjectUI();   // 🤖 AI asistan floating butonu
                 console.log('[INIT] _startApp complete');
             } catch(e) {
                 console.error('[INIT] FATAL ERROR in _startApp:', e);
@@ -16592,7 +16998,7 @@
             let orders = APP.state.deletedOrders;
             if (searchF) {
                 orders = orders.filter(o =>
-                    `${o.order_no} ${o.customer_name||''} ${o.city||''} ${o.project_code||''}`.toLowerCase().includes(searchF)
+                    `${o.order_no} ${o.customer_name||''} ${o.city||''} ${o.project_code||''} ${o.consolidation_no||''}`.toLowerCase().includes(searchF)
                 );
             }
 
@@ -16786,7 +17192,7 @@
                 if (statusF === 'loaded'         && !IN_LOADED.includes(o.status))   return false;
                 if (statusF && !['in_shipment', 'loaded'].includes(statusF) && o.status !== statusF) return false;
                 if (dateF && o.requested_ship_date !== dateF && o.deadline_date !== dateF) return false;
-                if (searchF && !`${o.order_no} ${o.customer_name||''} ${o.city||''} ${o.project_code||''}`.toLowerCase().includes(searchF)) return false;
+                if (searchF && !`${o.order_no} ${o.customer_name||''} ${o.city||''} ${o.project_code||''} ${o.consolidation_no||''}`.toLowerCase().includes(searchF)) return false;
                 return true;
             });
 
@@ -16848,9 +17254,10 @@
                                 <input type="checkbox" class="order-select" value="${o.id}" onchange="_updateBulkBar()">
                             </td>
                             <td style="padding:10px 12px">
-                                <div style="display:flex;align-items:center;gap:5px">
+                                <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
                                     <span style="font-weight:700;color:#333">${o.order_no}</span>
                                     ${isPrepack?'<span style="font-size:.62rem;background:#f3e8ff;color:#7c3aed;padding:1px 5px;border-radius:6px;font-weight:600">📦 PRE-PACK</span>':''}
+                                    ${o.consolidation_no?`<span onclick="event.stopPropagation();showPage('consolidation')" title="Tasarruf grubu — bu siparişler birlikte planlandı" style="font-size:.62rem;background:#e6f7f1;color:#0a7a64;padding:1px 6px;border-radius:6px;font-weight:800;cursor:pointer">🔗 ${o.consolidation_no}</span>`:''}
                                 </div>
                                 ${o.project_code?`<div style="color:#aaa;font-size:.7rem">${o.project_code}</div>`:''}
                                 ${inGroup?'<span style="font-size:.68rem;background:#d4edda;color:#155724;padding:1px 6px;border-radius:8px">gruplarda</span>':''}
@@ -17111,6 +17518,10 @@
                     const months = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
                     key   = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
                     label = `${months[d.getMonth()]} ${d.getFullYear()}`;
+                } else if (by === 'consolidation') {
+                    // Tasarruf No bazlı: aynı numara = birlikte planlanan siparişler
+                    key   = o.consolidation_no || 'zzz_none';
+                    label = o.consolidation_no ? `🔗 ${o.consolidation_no}` : 'Gruplanmamış';
                 }
                 if (!groups.has(key)) groups.set(key, { key, label, meta, orders: [] });
                 groups.get(key).orders.push(o);
@@ -17134,7 +17545,7 @@
                         <input type="checkbox" class="order-select" value="${o.id}" onchange="_updateBulkBar()">
                     </td>
                     <td style="padding:10px 12px">
-                        <div style="font-weight:700;color:#333">${o.order_no}</div>
+                        <div style="font-weight:700;color:#333">${o.order_no} ${o.consolidation_no?`<span onclick="event.stopPropagation();showPage('consolidation')" title="Tasarruf grubu — birlikte planlandı" style="font-size:.62rem;background:#e6f7f1;color:#0a7a64;padding:1px 6px;border-radius:6px;font-weight:800;cursor:pointer">🔗 ${o.consolidation_no}</span>`:''}</div>
                         ${o.project_code?`<div style="color:#aaa;font-size:.7rem">${o.project_code}</div>`:''}
                         ${inGroup?'<span style="font-size:.68rem;background:#d4edda;color:#155724;padding:1px 6px;border-radius:8px">gruplarda</span>':''}
                         ${o.shipment_ref?`<span onclick="event.stopPropagation();openShipmentDetail('${o.shipment_id}')" style="font-size:.68rem;background:#eef1ff;color:#C84259;padding:1px 6px;border-radius:8px;cursor:pointer" title="${o.shipment_ref} — Sevkiyat detayı için tıklayın">🚛 ${o.shipment_ref}</span>`:''}
@@ -17623,6 +18034,8 @@
         //  araçlara "doldurma önerisi" (gruplanmamış/gelecek hafta siparişleri).
         // ════════════════════════════════════════════════════════════
         const _TIR_W = 21000, _TIR_V = 76;   // 1 TIR pratik kapasite (kg, m³) — _recalcGroup ile aynı
+        // Konsolidasyon havuzu/öneri statüleri: sevkiyata bağlanmamış siparişler (yeni siparişler 'draft')
+        const _CONSOL_POOL_STATUSES = ['draft', 'pending', 'ready', 'in_suggestion'];
 
         function initConsolidation() {
             if (!APP.state.orders || !APP.state.orders.length) { _loadOrdersFromAPI().then(renderConsolidation); }
@@ -17630,11 +18043,19 @@
         }
 
         function _orderWV(o) {
+            // Pre-pack siparişlerde yük PALET GRUPLARINDAN gelir (items boş olabilir) → ayrı hesapla
+            if (o.order_type === 'prepack' && (o.pallet_groups || []).length) {
+                const w = o.pallet_groups.reduce((s, g) => s + (g.weight_kg || 0) * (g.pallet_count || 0), 0);
+                const v = o.pallet_groups.reduce((s, g) => s + ((g.width_cm || 0) * (g.length_cm || 0) * (g.height_cm || 0) * (g.pallet_count || 0)) / 1e6, 0);
+                return { w, v };
+            }
             const it = o.items || [];
             const w = it.reduce((s, i) => s + (i.weight_kg || 0) * (i.quantity || 0), 0);
             const v = it.reduce((s, i) => s + (((i.length_cm || 0) * (i.width_cm || 0) * (i.height_cm || 0)) * (i.quantity || 0)) / 1e6, 0);
             return { w, v };
         }
+        // Bir siparişin "plan günü" anahtarı: istenen sevk tarihi (yoksa termin)
+        function _orderShipDate(o) { return o.requested_ship_date || o.deadline_date || null; }
         function _consolCap(g) {
             const trucks = Math.max(1, g.estimated_trucks || 1);
             const capW = trucks * _TIR_W, capV = trucks * _TIR_V;
@@ -17674,11 +18095,36 @@
                 if (uv <= 0) return;
                 const count = Math.max(1, Math.ceil(Math.max(V / uv, W / mw)));      // hacim VEYA ağırlık → araç sayısı
                 const fill = Math.min(100, Math.max(V / (count * uv), W / (count * mw)) * 100);
+                // LDM (yükleme metresi) eşdeğeri: yük, araç EN-KESİTİNİ (en×yükseklik) doldurursa kullanılan boy.
+                // Piyasa standardı uzunluk-tabanlı doluluk göstergesi (teorik).
+                const vehW = (vt.width || 245) / 100, vehH = (vt.height || 270) / 100, vehL = (vt.length || 1360) / 100;
+                const ldmUsed = (vehW * vehH > 0) ? V / (vehW * vehH) : 0;
+                const ldmFill = (vehL > 0) ? Math.min(100, ldmUsed / (count * vehL) * 100) : 0;
                 const dd = _getVehDefaults(vt.type || code);
                 const per = (vt.baseCost ?? dd.base) + (vt.fuelPerKm ?? dd.fuel) * dd.dist + (vt.driverPerHour ?? dd.driver) * dd.dur + (vt.opportunityCost ?? dd.opp);
-                out.push({ code, name: vt.name, icon: vt.icon || '🚛', usableVol: uv, count, fill, cost: Math.round(count * per) });
+                out.push({ code, name: vt.name, icon: vt.icon || '🚛', usableVol: uv, count, fill, ldmFill, ldmUsed, vehLen: vehL, cost: Math.round(count * per) });
             });
             return out.sort((a, b) => a.cost - b.cost);   // en ucuz önce
+        }
+        // TASARRUF: siparişleri AYRI AYRI sevk etmek vs KONSOLİDE etmek (asıl kazanç buradan görünür)
+        function _consolSavings(g) {
+            if (!g || !g.orders.length) return null;
+            // Ayrı sevk: her sipariş kendi en ucuz aracıyla, tek başına
+            let sepCost = 0, sepTrucks = 0;
+            g.orders.forEach(o => {
+                const wv = _orderWV(o);
+                const fo = _consolFleetOptions({ orders: [o], total_volume_m3: wv.v, total_weight_kg: wv.w })[0];
+                if (fo) { sepCost += fo.cost; sepTrucks += fo.count; }
+            });
+            const consol = _consolFleetOptions(g)[0];
+            const consolCost = consol ? consol.cost : 0;
+            const consolTrucks = consol ? consol.count : 0;
+            const saveTrucks = Math.max(0, sepTrucks - consolTrucks);
+            const saveCost = Math.max(0, sepCost - consolCost);
+            // CO₂ kaba tahmin: kazanılan araç × ortalama mesafe × ~0.9 kg CO₂/km (ağır araç)
+            const dist = (_getVehDefaults('tir').dist) || 200;
+            const saveCO2 = Math.round(saveTrucks * dist * 0.9);
+            return { sepCost, sepTrucks, consolCost, consolTrucks, saveTrucks, saveCost, saveCO2 };
         }
         // DOLDURMA ÖNERİ MOTORU: gruplanmamış siparişlerden AYNI/yakın bölgeye gidenler,
         // EN YAKINDAN EN UZAĞA sıralı (haversine), termin yakınlığı ikincil. Boş kapasiteye
@@ -17689,18 +18135,25 @@
             const grouped = new Set(APP.state.shipmentGroups.flatMap(x => (x.orders || []).map(o => o.id)));
             const gc = _groupCoord(g);
             const curCity = (g.city || '').toLowerCase().trim();
+            const planDate = g.planDate;   // bu planın sevk günü (en erken sipariş)
             return (APP.state.orders || []).filter(o =>
-                    o.status === 'pending' && !o.deleted_at && !grouped.has(o.id))
+                    _CONSOL_POOL_STATUSES.includes(o.status) && !o.deleted_at && !grouped.has(o.id))
                 .map(o => {
                     const { w, v } = _orderWV(o);
                     const oc = _orderCoord(o);
                     const sameCity = (o.city || '').toLowerCase().trim() === curCity && !!curCity;
                     const dist = sameCity ? 0 : ((gc && oc) ? _haversineKm(gc, oc) : Infinity);
+                    const candDate = _orderShipDate(o);
+                    // ÜRETİM ÖNE ÇEKME: adayın istenen tarihi plandan SONRA ise, bu plana eklemek üretimi öne çeker
+                    const pullForward = !!(planDate && candDate && candDate > planDate);
+                    const daysPull = pullForward ? _daysBetween(planDate, candDate) : 0;
                     return { o, w, v, dist, sameCity, fits: w <= cap.remW + 1e-6 && v <= cap.remV + 1e-6,
-                             week: _getWeekStr(o.requested_ship_date), deadline: o.deadline_date };
+                             week: _getWeekStr(o.requested_ship_date), deadline: o.deadline_date,
+                             candDate, pullForward, daysPull };
                 })
                 .filter(c => c.sameCity || c.dist <= 250)        // aynı şehir veya ≤250 km (aynı güzergâh)
-                .sort((a, b) => (a.dist - b.dist) || String(a.deadline || '9999').localeCompare(String(b.deadline || '9999')))
+                // Sıralama: önce sığan+yakın, sonra mesafe, sonra en erken tarihli (öne çekmesi en kolay)
+                .sort((a, b) => (b.fits - a.fits) || (a.dist - b.dist) || String(a.candDate || '9999').localeCompare(String(b.candDate || '9999')))
                 .slice(0, 12);
         }
         function _consolAddOrder(gi, orderId) {
@@ -17712,7 +18165,9 @@
         function _consolAddFromPool(orderId) {
             const o = APP.state.orders.find(x => x.id === orderId); if (!o) return;
             const city = (o.city || '').toLowerCase().trim();
-            let gi = APP.state.shipmentGroups.findIndex(g => (g.city || '').toLowerCase().trim() === city && city);
+            // Öncelik: (1) BOŞ grup (kullanıcının kurduğu tohum planı) → (2) aynı şehir grubu → (3) yeni grup
+            let gi = APP.state.shipmentGroups.findIndex(g => !(g.orders || []).length);
+            if (gi < 0) gi = APP.state.shipmentGroups.findIndex(g => (g.city || '').toLowerCase().trim() === city && city);
             if (gi < 0) { addEmptyGroup(); gi = APP.state.shipmentGroups.length - 1; }
             _consolAddOrder(gi, orderId);
         }
@@ -17731,7 +18186,9 @@
             if (!groupsEl) return;
             const groups = APP.state.shipmentGroups || [];
             const grouped = new Set(groups.flatMap(g => (g.orders || []).map(o => o.id)));
-            const pool = (APP.state.orders || []).filter(o => o.status === 'pending' && !o.deleted_at && !grouped.has(o.id));
+            // Konsolidasyona aday: henüz sevkiyata bağlanmamış siparişler (draft/ready dahil — yeni
+            // siparişler 'draft' oluşur). Sevkiyata girmiş/yüklenmişler hariç.
+            const pool = (APP.state.orders || []).filter(o => _CONSOL_POOL_STATUSES.includes(o.status) && !o.deleted_at && !grouped.has(o.id));
 
             // ── KPI'lar (araç-tipi filo + maliyet) ──
             const fleets = groups.map(g => _consolFleetOptions(g)[0] || null);
@@ -17740,11 +18197,15 @@
             const fillVals = fleets.map(f => f ? f.fill : 0);
             const avgFill = fillVals.length ? (fillVals.reduce((s, x) => s + x, 0) / fillVals.length) : 0;
             const halfEmpty = fillVals.filter(x => x < 80).length;
+            // Toplam tasarruf (ayrı vs konsolide, tüm gruplar)
+            const savs = groups.map(g => _consolSavings(g)).filter(Boolean);
+            const totalSaveTrucks = savs.reduce((s, x) => s + x.saveTrucks, 0);
+            const totalSaveCost   = savs.reduce((s, x) => s + x.saveCost, 0);
             if (kpiEl) kpiEl.innerHTML = [
                 ['Grup', groups.length, '#4e6bdc'], ['Tahmini Araç', totalVehicles, '#C84259'],
                 ['Ort. Doluluk', avgFill.toFixed(0) + '%', avgFill >= 80 ? '#1d9e75' : '#e6a817'],
                 ['Yarım Araç', halfEmpty, halfEmpty ? '#e24b4a' : '#1d9e75'],
-                ['Tahmini Maliyet', totalCost.toLocaleString('tr-TR') + ' ₺', '#0e8a72'],
+                ['💰 Tasarruf', (totalSaveTrucks ? '−' + totalSaveTrucks + ' araç · ' : '') + totalSaveCost.toLocaleString('tr-TR') + ' ₺', '#0e8a72'],
                 ['Havuzda', pool.length, '#7c3aed'],
             ].map(([l, v, c]) => `<div style="background:#fff;border-radius:14px;padding:13px 16px;box-shadow:0 8px 20px rgba(18,38,63,.05)"><div style="font-size:.7rem;color:#6b778c;text-transform:uppercase;letter-spacing:.06em">${l}</div><div style="font-size:1.5rem;font-weight:800;color:${c};margin-top:3px">${v}</div></div>`).join('');
 
@@ -17755,7 +18216,7 @@
                 poolEl.innerHTML =
                     `<div style="padding:13px 16px;border-bottom:1px solid #f0f0f0;flex-shrink:0">
                         <div style="font-weight:800;color:#1a1f2e;font-size:.95rem"><i class="bi bi-inbox" style="color:#7c3aed"></i> Bekleyen Havuzu</div>
-                        <div style="font-size:.72rem;color:#97a0b2;margin-top:2px">${pool.length} gruplanmamış sipariş — “+” ile aynı şehir grubuna ekle</div>
+                        <div style="font-size:.72rem;color:#97a0b2;margin-top:2px">${pool.length} bekleyen sipariş — <b style="color:#1d9e75">+ Plana</b> ile plana ekle (tohum)</div>
                      </div>
                      <div style="flex:1;overflow-y:auto;padding:10px">${weeks.length ? weeks.map(wk => `
                         <div style="font-size:.66rem;font-weight:700;color:#aab2c0;text-transform:uppercase;letter-spacing:.4px;margin:8px 2px 4px">${wk}</div>
@@ -17763,7 +18224,7 @@
                           <div style="display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid #eef1f5;border-radius:10px;margin-bottom:6px;background:#fafbfc">
                             <div style="flex:1;min-width:0"><div style="font-size:.78rem;font-weight:700;color:#333">${o.order_no}</div>
                             <div style="font-size:.67rem;color:#8a93a6">📍 ${o.city || '—'} · ${(w / 1000).toFixed(1)}t${(o.priority || 3) <= 2 ? ' · <span style="color:#d64545;font-weight:700">ACİL</span>' : ''}</div></div>
-                            <button onclick="_consolAddFromPool('${o.id}')" title="Aynı şehir grubuna ekle (yoksa yeni grup oluştur)" style="background:#1d9e75;color:#fff;border:none;border-radius:8px;width:26px;height:26px;cursor:pointer;font-weight:700;flex-shrink:0">+</button>
+                            <button onclick="_consolAddFromPool('${o.id}')" title="Bu siparişi plana ekle (boş plan varsa ona, yoksa aynı şehir / yeni plan)" style="background:#1d9e75;color:#fff;border:none;border-radius:8px;padding:5px 10px;cursor:pointer;font-weight:700;font-size:.7rem;flex-shrink:0;white-space:nowrap">+ Plana</button>
                           </div>`; }).join('')}`).join('') : '<div style="text-align:center;color:#bbb;padding:24px;font-size:.82rem">Havuz boş — tüm siparişler gruplandı 🎉</div>'}</div>`;
             }
 
@@ -17781,13 +18242,16 @@
                     const sugg = _consolSuggestions(gi);
                     const fleet = _consolFleetOptions(g);            // araç-tipi seçenekleri (en ucuz önce)
                     const best = fleet[0] || null;                  // önerilen filo
+                    const sav = _consolSavings(g);                  // ayrı vs konsolide tasarruf
+                    const planLbl = g.planDate ? _formatDate((g.planDate || '').split('T')[0]) : '';
                     const fillPct = best ? best.fill : cap.fillPct;
                     const barColor = fillPct >= 85 ? '#1d9e75' : fillPct >= 60 ? '#e6a817' : '#e24b4a';
                     return `<div style="border:1.5px solid ${g.has_urgent ? '#ffcccc' : '#e9ecef'};border-radius:14px;background:${g.has_urgent ? '#fff8f8' : '#fff'};box-shadow:0 8px 20px rgba(18,38,63,.05);overflow:hidden;display:flex;flex-direction:column">
                       <div style="padding:13px 15px;border-bottom:1px solid #f3f5f8">
                         <div style="display:flex;justify-content:space-between;align-items:flex-start">
                           <div><div style="font-size:.95rem;font-weight:800;color:#1a1f2e">📍 ${g.city || 'Yeni Grup'} ${g.has_urgent ? '<span style="background:#ffd5d5;color:#c00;font-size:.6rem;padding:1px 6px;border-radius:6px">ACİL</span>' : ''}</div>
-                          <div style="font-size:.7rem;color:#97a0b2">${g.week || ''} · ${g.orders.length} sipariş · ${totalQty} parça</div></div>
+                          <div style="font-size:.7rem;color:#97a0b2">${g.week || ''} · ${g.orders.length} sipariş · ${totalQty} parça</div>
+                          ${planLbl ? `<div style="font-size:.66rem;color:#7c3aed;font-weight:600;margin-top:1px" title="Bu planın sevk günü — en erken siparişten">📅 Sevk planı: ${planLbl}</div>` : ''}</div>
                           <button onclick="removeGroup(${gi});renderConsolidation()" style="background:none;border:none;color:#ccc;cursor:pointer;font-size:1rem">×</button>
                         </div>
                         <div style="margin-top:10px">
@@ -17803,7 +18267,7 @@
                           <span style="font-size:.95rem">${f.icon}</span>
                           <div style="flex:1;min-width:0">
                             <div style="font-size:.74rem;font-weight:${fi === 0 ? '800' : '600'};color:#1a1f2e">${f.count} × ${f.name} ${fi === 0 ? '<span style="font-size:.58rem;background:#1d9e75;color:#fff;padding:0 5px;border-radius:5px;vertical-align:middle">EN UYGUN</span>' : ''}</div>
-                            <div style="font-size:.64rem;color:#8a93a6">${f.usableVol.toFixed(0)} m³/araç · %${f.fill.toFixed(0)} dolu</div>
+                            <div style="font-size:.64rem;color:#8a93a6">${f.usableVol.toFixed(0)} m³/araç · %${f.fill.toFixed(0)} hacim · <span title="Yükleme metresi eşdeğeri">LDM %${f.ldmFill.toFixed(0)}</span></div>
                           </div>
                           <div style="font-size:.78rem;font-weight:800;color:${fi === 0 ? '#0e8a72' : '#5b6678'};white-space:nowrap">${f.cost.toLocaleString('tr-TR')} ₺</div>
                         </div>`).join('')}
@@ -17822,14 +18286,22 @@
                           const dl = _omDate(s.o);
                           return `<div style="display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:9px;background:#fff;border:1px solid ${s.fits ? '#bce8d8' : '#f0e0c0'};margin-bottom:5px">
                             <div style="flex:1;min-width:0">
-                              <div style="font-size:.74rem;font-weight:700;color:#333">${s.o.order_no} <span style="font-size:.62rem;color:#0e8a72;font-weight:600">📍 ${distLbl}</span>${dl ? ` <span style="font-size:.6rem;color:#b66a0e">⏱ ${dl}</span>` : ''}</div>
+                              <div style="font-size:.74rem;font-weight:700;color:#333">${s.o.order_no} <span style="font-size:.62rem;color:#0e8a72;font-weight:600">📍 ${distLbl}</span>${dl ? ` <span style="font-size:.6rem;color:#b66a0e">⏱ ${dl}</span>` : ''}${s.pullForward ? ` <span title="İstenen tarihi ${_formatDate((s.candDate||'').split('T')[0])} — bu plana eklenirse üretim ${s.daysPull} gün öne çekilir" style="font-size:.56rem;background:#fff0e0;color:#b45309;padding:1px 5px;border-radius:5px;font-weight:800">⏩ ÜRETİM ÖNE</span>` : ''}</div>
                               <div style="font-size:.66rem;color:#8a93a6">${s.o.city || ''} · ${(s.w / 1000).toFixed(1)}t · ${s.v.toFixed(1)} m³ ${s.fits ? `→ %${newFill.toFixed(0)} dolu` : '<span style="color:#c98a1a">taşar → +1 araç</span>'}</div>
                             </div>
                             <button onclick="_consolAddOrder(${gi},'${s.o.id}')" style="background:#0e8a72;color:#fff;border:none;border-radius:7px;padding:4px 10px;font-size:.7rem;font-weight:700;cursor:pointer;flex-shrink:0">+ Ekle</button>
                           </div>`; }).join('')}
                       </div>` : (g.orders.length ? `<div style="padding:8px 12px;font-size:.7rem;color:#aab;background:#fafbfc;border-top:1px solid #f0f0f0">Yakında (≤250 km) eklenebilecek bekleyen sipariş yok. <span style="color:#7c3aed;cursor:pointer" onclick="dissolveAllGroups()">Havuza boşalt</span> ile yeniden dene.</div>` : '')}
                       <div style="padding:10px 12px;border-top:1px solid #f3f5f8;margin-top:auto">
-                        <button onclick="convertGroupToShipment(${gi})" ${g.orders.length ? '' : 'disabled'} style="width:100%;background:${g.orders.length ? 'linear-gradient(135deg,#C84259,#8C1A2E)' : '#e9ecef'};color:#fff;border:none;border-radius:9px;padding:9px;font-size:.78rem;font-weight:700;cursor:${g.orders.length ? 'pointer' : 'default'}">Sevkiyata Dönüştür →</button>
+                        ${sav && sav.saveTrucks > 0 ? `<div style="background:#eef7f3;border:1px solid #bce8d8;border-radius:9px;padding:7px 10px;margin-bottom:8px;font-size:.68rem">
+                          <div style="font-weight:800;color:#0e8a72;margin-bottom:2px">💰 Konsolidasyon tasarrufu</div>
+                          <div style="color:#5b6678">Ayrı: <b>${sav.sepTrucks} araç</b> / ${sav.sepCost.toLocaleString('tr-TR')} ₺ → Birlikte: <b>${sav.consolTrucks} araç</b> / ${sav.consolCost.toLocaleString('tr-TR')} ₺</div>
+                          <div style="color:#0e8a72;font-weight:800;margin-top:2px">−${sav.saveTrucks} araç · −${sav.saveCost.toLocaleString('tr-TR')} ₺ · −${sav.saveCO2.toLocaleString('tr-TR')} kg CO₂</div>
+                        </div>` : (sav && g.orders.length > 1 ? `<div style="font-size:.66rem;color:#97a0b2;margin-bottom:8px;text-align:center">Tek araca sığıyor — doluluğu artırmak için öneriden sipariş ekle.</div>` : '')}
+                        <div style="display:flex;gap:7px">
+                          <button onclick="confirmConsolidationGroup(${gi})" ${g.orders.length ? '' : 'disabled'} title="Siparişlere ortak Tasarruf No ata — birlikte planla (sevkiyat oluşturmaz)" style="flex:1;background:${!g.orders.length ? '#e9ecef' : g.consolidation_no ? '#0a7a64' : '#0e8a72'};color:#fff;border:none;border-radius:9px;padding:9px 6px;font-size:.74rem;font-weight:700;cursor:${g.orders.length ? 'pointer' : 'default'}">${g.consolidation_no ? '✓ ' + g.consolidation_no : '✓ Gruplamayı Onayla'}</button>
+                          <button onclick="convertGroupToShipment(${gi})" ${g.orders.length ? '' : 'disabled'} title="Sevkiyat oluştur ve planlama adımına geç" style="flex:1;background:${g.orders.length ? 'linear-gradient(135deg,#C84259,#8C1A2E)' : '#e9ecef'};color:#fff;border:none;border-radius:9px;padding:9px 6px;font-size:.74rem;font-weight:700;cursor:${g.orders.length ? 'pointer' : 'default'}">Sevkiyat →</button>
+                        </div>
                       </div>
                     </div>`;
                 }).join('') + `</div>`;
@@ -17908,12 +18380,18 @@
         function _recalcGroup(gi) {
             const g = APP.state.shipmentGroups[gi];
             if (!g) return;
-            const all = g.orders.flatMap(o=>o.items||[]);
-            g.total_weight_kg = all.reduce((s,i)=>s+i.weight_kg*i.quantity, 0);
-            g.total_volume_m3 = all.reduce((s,i)=>s+(i.length_cm*i.width_cm*i.height_cm*i.quantity)/1e6, 0);
-            g.fits_one_tir    = g.total_weight_kg < 21000 && g.total_volume_m3 < 76;
-            g.estimated_trucks= g.fits_one_tir ? 1 : Math.ceil(g.total_volume_m3 / 76);
+            // Prepack + normal siparişleri birlikte topla (_orderWV ikisini de bilir)
+            let w = 0, v = 0;
+            g.orders.forEach(o => { const wv = _orderWV(o); w += wv.w; v += wv.v; });
+            g.total_weight_kg = w;
+            g.total_volume_m3 = v;
+            g.fits_one_tir    = w < _TIR_W && v < _TIR_V;
+            g.estimated_trucks= g.fits_one_tir ? 1 : Math.ceil(Math.max(v / _TIR_V, w / _TIR_W));
             g.has_urgent      = g.orders.some(o=>(o.priority||3)<=2);
+            // PLAN TARİHİ = en erken istenen sevk tarihi (en acil sipariş sürükler). Daha geç tarihli
+            // siparişler bu plana eklenirse "üretim öne çekilir" (pull-forward).
+            const dates = g.orders.map(_orderShipDate).filter(Boolean).sort();
+            g.planDate = dates[0] || null;
             if (g.orders.length && !g.city) {
                 g.city = g.orders[0].city || '';
                 g.week = _getWeekStr(g.orders[0].requested_ship_date);
@@ -17921,9 +18399,66 @@
             }
         }
 
-        function convertGroupToShipment(gi) {
+        // Sıradaki Tasarruf No (TAS-001, TAS-002 ...) — mevcut siparişlerdeki en büyükten +1
+        function _nextConsolidationNo() {
+            let max = 0;
+            (APP.state.orders || []).forEach(o => {
+                const m = /^TAS-(\d+)$/.exec(o.consolidation_no || '');
+                if (m) max = Math.max(max, parseInt(m[1]));
+            });
+            return 'TAS-' + String(max + 1).padStart(3, '0');
+        }
+
+        // GRUPLAMAYI ONAYLA: siparişlere ortak bir Tasarruf No atar (birlikte planlandı işareti).
+        // Sevkiyat OLUŞTURMAZ — siparişler havuzda kalır ama artık bu numarayla gruplu görünür.
+        async function confirmConsolidationGroup(gi) {
             const g = APP.state.shipmentGroups[gi];
             if (!g || !g.orders.length) return;
+            const existing = g.orders.map(o => o.consolidation_no).find(Boolean);
+            const tasNo = g.consolidation_no || existing || _nextConsolidationNo();
+            const sav = _consolSavings(g);
+            const savTxt = (sav && sav.saveTrucks > 0)
+                ? `\n\n💰 Tasarruf: −${sav.saveTrucks} araç · −${sav.saveCost.toLocaleString('tr-TR')} ₺` : '';
+            if (!confirm(`Bu ${g.orders.length} sipariş "${tasNo}" tasarruf grubu olarak BİRLİKTE planlansın mı?${savTxt}\n\n` +
+                         `Siparişler ekranında bu numarayla birlikte görünecekler.`)) return;
+            for (const o of g.orders) {
+                if (APP.state.apiMode) {
+                    try { await API.put(`/orders/${o.id}`, { consolidation_no: tasNo }); }
+                    catch (e) { console.warn('[consol] Tasarruf No atanamadı:', o.order_no, e); }
+                }
+                o.consolidation_no = tasNo;   // local senkron
+            }
+            g.consolidation_no = tasNo; g.confirmed = true;
+            UI.toast(`✅ ${tasNo} oluşturuldu — ${g.orders.length} sipariş birlikte planlandı`, 'success', 4500);
+            renderConsolidation();
+            renderOrdersList();
+            // Siparişler ekranına dön + bu tasarruf grubunu süz
+            showPage('orders');
+            setTimeout(() => { const el = document.getElementById('orderSearchFilter'); if (el) { el.value = tasNo; el.dispatchEvent(new Event('input')); } }, 250);
+        }
+
+        async function convertGroupToShipment(gi) {
+            const g = APP.state.shipmentGroups[gi];
+            if (!g || !g.orders.length) return;
+            // ── ÜRETİM ÖNE ÇEKME: istenen sevk tarihi plan tarihinden SONRA olan siparişler ──
+            const planDate = g.planDate;
+            const pulled = g.orders.filter(o => { const d = _orderShipDate(o); return planDate && d && d > planDate; });
+            if (pulled.length) {
+                const fmt = s => _formatDate((s || '').split('T')[0]);
+                const list = pulled.map(o => `• ${o.order_no}: ${fmt(_orderShipDate(o))} → ${fmt(planDate)}`).join('\n');
+                const ok = confirm(`Bu sevkiyat ${pulled.length} siparişin üretimini ÖNE ÇEKİYOR.\n` +
+                                   `İstenen sevk tarihleri ${fmt(planDate)} olarak güncellensin mi?\n\n${list}`);
+                if (ok) {
+                    for (const o of pulled) {
+                        if (APP.state.apiMode) {
+                            try { await API.put(`/orders/${o.id}`, { requested_ship_date: planDate }); }
+                            catch (e) { console.warn('[consol] tarih güncellenemedi:', o.order_no, e); }
+                        }
+                        o.requested_ship_date = planDate;   // local state senkron
+                    }
+                    UI.toast(`${pulled.length} siparişin üretimi öne çekildi → ${fmt(planDate)}`, 'success', 4000);
+                }
+            }
             _loadOrdersIntoWizard(g.orders);
             APP.state.shipmentGroups.splice(gi, 1);
             renderGroupingPanel();
@@ -18028,6 +18563,31 @@
                 const first = prepackOrders[0];
                 if (first?.requested_ship_date) { const ld=document.getElementById('loadingDate'); if(ld) ld.value=first.requested_ship_date; }
                 if (first?.deadline_date)        { const dd=document.getElementById('deliveryDate');if(dd) dd.value=first.deadline_date; }
+
+                // PREPACK: backend sevkiyatı oluştur → /scenarios/generate için shipmentId GEREKLİ
+                // (eskiden prepack'te shipment oluşmuyordu → 'apiMode var ama shipmentId yok' → yerel FFD).
+                // Kullanıcı Adım 3'ü incelerken bu async tamamlanır; optimize (Adım 4) için hazır olur.
+                if (APP.state.apiMode) {
+                    (async () => {
+                        try {
+                            const sh = await API.post('/shipments', {
+                                pallet_type: prepackOrders[0]?.pallet_type || 'PP',
+                                destination: (dest && dest.value) || '',
+                                order_ids: prepackOrders.map(o => o.id),
+                                products: [],   // prepack: ürün yok, paletler grup-tanımlı
+                            });
+                            APP.state.shipmentId = sh.id;
+                            APP.state.shipmentRefNo = sh.reference_no || null;
+                            prepackOrders.forEach(o => {
+                                const oo = APP.state.orders.find(x => x.id === o.id);
+                                if (oo) { oo.shipment_id = sh.id; oo.shipment_ref = sh.reference_no; }
+                            });
+                            console.info('[prepack] backend sevkiyatı oluşturuldu:', sh.reference_no, sh.id);
+                        } catch (e) {
+                            console.error('[prepack] sevkiyat oluşturulamadı → yerel mod:', e.status, e.message);
+                        }
+                    })();
+                }
 
                 StatusManager.bulkUpdateOrderStatus(prepackOrders.map(o=>o.id), 'in_shipment');
                 showPage('plan');
@@ -19528,7 +20088,10 @@
             const _fc = p => p >= 75 ? '#1D9E75' : p >= 50 ? '#f59e0b' : '#E24B4A';
             let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
                 <div style="font-size:.92rem;font-weight:700;color:#1a1f2e">Palet Planı Detayı <span style="color:#888;font-weight:400;font-size:.78rem">(${pallets.length} palet)</span></div>
-                <button onclick="_printPalletReport(_sdCurrentData)" style="background:#C84259;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:600;cursor:pointer">🖨️ Palet Raporu Yazdır</button>
+                <div style="display:flex;gap:8px">
+                    <button onclick="_printPalletReport(_sdCurrentData)" style="background:#C84259;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:600;cursor:pointer">🖨️ Palet Raporu Yazdır</button>
+                    <button onclick="_exportPalletReportExcel(_sdCurrentData)" style="background:#1d9e75;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:600;cursor:pointer"><i class="bi bi-file-earmark-excel"></i> Excel</button>
+                </div>
             </div>`;
 
             html += pallets.map((p,i) => {
@@ -19608,7 +20171,10 @@
 
             let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
                 <div style="font-size:.92rem;font-weight:700;color:#1a1f2e">Araç Planı Detayı <span style="color:#888;font-weight:400;font-size:.78rem">(${scenario.total_vehicles} araç)</span></div>
-                <button onclick="_printVehicleReport(_sdCurrentData)" style="background:#C84259;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:600;cursor:pointer">🖨️ Araç Raporu Yazdır</button>
+                <div style="display:flex;gap:8px">
+                    <button onclick="_printVehicleReport(_sdCurrentData)" style="background:#C84259;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:600;cursor:pointer">🖨️ Araç Raporu Yazdır</button>
+                    <button onclick="_exportVehicleReportExcel(_sdCurrentData)" style="background:#1d9e75;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:.8rem;font-weight:600;cursor:pointer"><i class="bi bi-file-earmark-excel"></i> Excel</button>
+                </div>
             </div>`;
 
             // Strategy summary
@@ -19782,9 +20348,115 @@
 
             html += `</body></html>`;
             const w = window.open('', '_blank');
+            if (!w) { alert('Yazdırma penceresi açılamadı. Lütfen bu site için pop-up engelleyiciyi kapatın.'); return; }
             w.document.write(html);
             w.document.close();
             w.setTimeout(() => w.print(), 300);
+        }
+
+        // Siparişler ekranından: siparişin sevkiyatını çekip palet raporunu yazdır/Excel'e aktar
+        async function _orderPalletReport(orderId, mode) {
+            const order = APP.state.orders.find(o => o.id === orderId);
+            if (!order?.shipment_id) { UI.toast('Bu siparişe atanmış sevkiyat yok', 'error'); return; }
+            try {
+                UI.toast('Palet raporu hazırlanıyor…', 'info', 1500);
+                const data = await API.get(`/shipments/${order.shipment_id}`);
+                if (!data?.pallets?.length) { UI.toast('Bu sevkiyatte palet bulunamadı', 'warning'); return; }
+                if (mode === 'excel') await _exportPalletReportExcel(data);
+                else _printPalletReport(data);
+            } catch (e) {
+                UI.toast('Palet raporu yüklenemedi: ' + e.message, 'error');
+            }
+        }
+
+        // Palet raporunun Excel karşılığı — _printPalletReport ile birebir aynı içerik
+        // (Sayfa 1: palet özeti · Sayfa 2: ürün kırılımı)
+        async function _exportPalletReportExcel(data) {
+            const pallets = data.pallets || [];
+            if (!pallets.length) { UI.toast('Palet bulunamadı', 'warning'); return; }
+            const refNo = data.reference_no || 'TASLAK';
+            const wb = new ExcelJS.Workbook();
+
+            // ── Sayfa 1: Palet Özeti ──
+            const ws = wb.addWorksheet('Palet Özeti');
+            ws.mergeCells('A1:F1');
+            const c1 = ws.getCell('A1');
+            c1.value = `PALET RAPORU — ${refNo}${data.destination ? ' · ' + data.destination : ''}`;
+            c1.font = { bold:true, size:13, color:{argb:'FFFFFFFF'} };
+            c1.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FF1a1f2e'} };
+            c1.alignment = { vertical:'middle' };
+            ws.getRow(1).height = 30;
+            ws.mergeCells('A2:F2');
+            ws.getCell('A2').value = `Rapor tarihi: ${new Date().toLocaleString('tr-TR')}`;
+            ws.getCell('A2').font = { italic:true, size:9, color:{argb:'FF888888'} };
+
+            ws.columns = [{width:14},{width:14},{width:12},{width:14},{width:14},{width:12}];
+            const hdrs = ['Palet No','Tip','Doluluk (%)','Ağırlık (kg)','Hacim (m³)','Ürün Sayısı'];
+            const hRow = ws.getRow(3);
+            hdrs.forEach((h,i) => {
+                const cell = hRow.getCell(i+1);
+                cell.value = h; cell.font = { bold:true, size:10, color:{argb:'FFFFFFFF'} };
+                cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FFC84259'} };
+                cell.alignment = { horizontal:'center', vertical:'middle' };
+            });
+
+            let r = 4;
+            pallets.forEach((p,i) => {
+                const fill = Math.round(p.fill_rate_pct || 0);
+                const row = ws.getRow(r++);
+                row.getCell(1).value = `Palet ${p.pallet_number}`;
+                row.getCell(2).value = p.pallet_type || 'euro';
+                row.getCell(3).value = fill;
+                row.getCell(4).value = Number((p.total_weight_kg || 0).toFixed(1));
+                row.getCell(5).value = Number((p.total_volume_m3 || 0).toFixed(3));
+                row.getCell(6).value = (p.products || []).length;
+                const bg = i % 2 === 0 ? 'FFFFFFFF' : 'FFF7F7F7';
+                for (let c = 1; c <= 6; c++) {
+                    row.getCell(c).fill = { type:'pattern', pattern:'solid', fgColor:{argb:bg} };
+                    row.getCell(c).font = { size:10 };
+                }
+                row.getCell(3).alignment = { horizontal:'center' };
+            });
+
+            // ── Sayfa 2: Palet Detayı (ürün kırılımı) ──
+            const ws2 = wb.addWorksheet('Palet Detayı');
+            ws2.columns = [{width:12},{width:28},{width:8},{width:18},{width:14},{width:22}];
+            const h2 = ['Palet No','Ürün','Adet','Ölçü (cm)','Ağırlık (kg)','Pozisyon'];
+            const hr2 = ws2.getRow(1);
+            h2.forEach((h,i) => {
+                const cell = hr2.getCell(i+1);
+                cell.value = h; cell.font = { bold:true, size:10, color:{argb:'FFFFFFFF'} };
+                cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FF1a1f2e'} };
+                cell.alignment = { horizontal:'center', vertical:'middle' };
+            });
+            let r2 = 2;
+            pallets.forEach(p => {
+                const prods = p.products || [];
+                if (!prods.length) {
+                    const row = ws2.getRow(r2++);
+                    row.getCell(1).value = `Palet ${p.pallet_number}`;
+                    row.getCell(2).value = 'Ürün detayı bulunamadı';
+                    row.getCell(2).font = { italic:true, color:{argb:'FF999999'} };
+                    return;
+                }
+                prods.forEach(pr => {
+                    const row = ws2.getRow(r2++);
+                    row.getCell(1).value = `Palet ${p.pallet_number}`;
+                    row.getCell(2).value = pr.name || '—';
+                    row.getCell(3).value = pr.quantity || 1;
+                    row.getCell(4).value = `${pr.length_cm||'—'}×${pr.width_cm||'—'}×${pr.height_cm||'—'}`;
+                    row.getCell(5).value = pr.weight_kg ? Number((pr.weight_kg*(pr.quantity||1)).toFixed(1)) : null;
+                    row.getCell(6).value = pr.pos_x != null ? `x:${pr.pos_x} y:${pr.pos_y} z:${pr.pos_z}` : '—';
+                });
+            });
+
+            const buf = await wb.xlsx.writeBuffer();
+            const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `palet_raporu_${refNo}.xlsx`; a.click();
+            URL.revokeObjectURL(url);
+            UI.toast('Palet raporu Excel indirildi', 'success');
         }
 
         function _printVehicleReport(data) {
@@ -19842,9 +20514,123 @@
 
             html += `</body></html>`;
             const w = window.open('', '_blank');
+            if (!w) { alert('Yazdırma penceresi açılamadı. Lütfen bu site için pop-up engelleyiciyi kapatın.'); return; }
             w.document.write(html);
             w.document.close();
             w.setTimeout(() => w.print(), 300);
+        }
+
+        // Siparişler ekranından: siparişin sevkiyatını çekip araç raporunu yazdır/Excel'e aktar
+        async function _orderVehicleReport(orderId, mode) {
+            const order = APP.state.orders.find(o => o.id === orderId);
+            if (!order?.shipment_id) { UI.toast('Bu siparişe atanmış sevkiyat yok', 'error'); return; }
+            try {
+                UI.toast('Araç raporu hazırlanıyor…', 'info', 1500);
+                const data = await API.get(`/shipments/${order.shipment_id}`);
+                if (!data?.selected_scenario) { UI.toast('Bu sevkiyatte araç planı bulunamadı', 'warning'); return; }
+                if (mode === 'excel') await _exportVehicleReportExcel(data);
+                else _printVehicleReport(data);
+            } catch (e) {
+                UI.toast('Araç raporu yüklenemedi: ' + e.message, 'error');
+            }
+        }
+
+        // Araç raporunun Excel karşılığı — _printVehicleReport ile birebir aynı içerik
+        // (Sayfa 1: araç özeti · Sayfa 2: araç-palet dağılımı)
+        async function _exportVehicleReportExcel(data) {
+            const scenario = data.selected_scenario;
+            if (!scenario) { UI.toast('Araç planı bulunamadı', 'warning'); return; }
+            const pallets = data.pallets || [];
+            const assignments = scenario.vehicle_assignments || [];
+            const refNo = data.reference_no || 'TASLAK';
+            const wb = new ExcelJS.Workbook();
+
+            // ── Sayfa 1: Araç Özeti ──
+            const ws = wb.addWorksheet('Araç Özeti');
+            ws.mergeCells('A1:F1');
+            const c1 = ws.getCell('A1');
+            c1.value = `ARAÇ PLANI RAPORU — ${refNo}${data.destination ? ' · ' + data.destination : ''}`;
+            c1.font = { bold:true, size:13, color:{argb:'FFFFFFFF'} };
+            c1.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FF1a1f2e'} };
+            c1.alignment = { vertical:'middle' };
+            ws.getRow(1).height = 30;
+            ws.mergeCells('A2:F2');
+            ws.getCell('A2').value = `Strateji: ${scenario.name||scenario.strategy||'—'} · Araç: ${scenario.total_vehicles||assignments.length} · Ort. Doluluk: ${Math.round(scenario.avg_fill_rate_pct||0)}% · Maliyet: ${scenario.total_cost ? Number(scenario.total_cost).toLocaleString('tr-TR')+' ₺' : '—'} · ${new Date().toLocaleString('tr-TR')}`;
+            ws.getCell('A2').font = { italic:true, size:9, color:{argb:'FF888888'} };
+
+            ws.columns = [{width:10},{width:22},{width:12},{width:18},{width:12},{width:14}];
+            const hdrs = ['Araç','Tip','Doluluk (%)','Hacim (m³)','Palet Sayısı','Maliyet (₺)'];
+            const hRow = ws.getRow(3);
+            hdrs.forEach((h,i) => {
+                const cell = hRow.getCell(i+1);
+                cell.value = h; cell.font = { bold:true, size:10, color:{argb:'FFFFFFFF'} };
+                cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FFC84259'} };
+                cell.alignment = { horizontal:'center', vertical:'middle' };
+            });
+
+            let r = 4;
+            assignments.forEach((v,i) => {
+                const fillPct = Math.round(v.fill_rate_pct ?? v.fillRate ?? 0);
+                const loadedVol = (v.current_volume_m3 || 0);
+                const vehVol = (v.vehicle_volume_m3 || ((v.length_cm||0)*(v.width_cm||0)*(v.height_cm||0)/1e6));
+                const palletCount = v.pallet_count ?? v.palletIds?.length ?? v.assigned_pallets?.length ?? 0;
+                const row = ws.getRow(r++);
+                row.getCell(1).value = `Araç ${i+1}`;
+                row.getCell(2).value = v.vehicle_name||v.name||v.type||'—';
+                row.getCell(3).value = fillPct;
+                row.getCell(4).value = `${loadedVol.toFixed(1)} / ${vehVol.toFixed(1)}`;
+                row.getCell(5).value = palletCount;
+                row.getCell(6).value = v.cost ? Number(v.cost) : null;
+                const bg = i % 2 === 0 ? 'FFFFFFFF' : 'FFF7F7F7';
+                for (let c = 1; c <= 6; c++) {
+                    row.getCell(c).fill = { type:'pattern', pattern:'solid', fgColor:{argb:bg} };
+                    row.getCell(c).font = { size:10 };
+                }
+                row.getCell(3).alignment = { horizontal:'center' };
+                row.getCell(5).alignment = { horizontal:'center' };
+            });
+
+            // ── Sayfa 2: Araç-Palet Dağılımı ──
+            const ws2 = wb.addWorksheet('Araç-Palet');
+            ws2.columns = [{width:10},{width:14},{width:12},{width:14},{width:12}];
+            const h2 = ['Araç','Palet No','Doluluk (%)','Ağırlık (kg)','Ürün Sayısı'];
+            const hr2 = ws2.getRow(1);
+            h2.forEach((h,i) => {
+                const cell = hr2.getCell(i+1);
+                cell.value = h; cell.font = { bold:true, size:10, color:{argb:'FFFFFFFF'} };
+                cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FF1a1f2e'} };
+                cell.alignment = { horizontal:'center', vertical:'middle' };
+            });
+            let r2 = 2;
+            assignments.forEach((v,i) => {
+                const palletIds = v.palletIds || v.assigned_pallets || [];
+                const vehiclePallets = palletIds.length ? pallets.filter(p => palletIds.includes(p.id) || palletIds.includes(p.pallet_number)) : [];
+                if (!vehiclePallets.length) {
+                    const row = ws2.getRow(r2++);
+                    row.getCell(1).value = `Araç ${i+1}`;
+                    row.getCell(2).value = '(palet atanmadı)';
+                    row.getCell(2).font = { italic:true, color:{argb:'FF999999'} };
+                    return;
+                }
+                vehiclePallets.forEach(p => {
+                    const row = ws2.getRow(r2++);
+                    row.getCell(1).value = `Araç ${i+1}`;
+                    row.getCell(2).value = `Palet ${p.pallet_number}`;
+                    row.getCell(3).value = Math.round(p.fill_rate_pct || 0);
+                    row.getCell(4).value = Number((p.total_weight_kg || 0).toFixed(1));
+                    row.getCell(5).value = (p.products || []).length;
+                    row.getCell(3).alignment = { horizontal:'center' };
+                    row.getCell(5).alignment = { horizontal:'center' };
+                });
+            });
+
+            const buf = await wb.xlsx.writeBuffer();
+            const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `arac_raporu_${refNo}.xlsx`; a.click();
+            URL.revokeObjectURL(url);
+            UI.toast('Araç raporu Excel indirildi', 'success');
         }
 
         function _printShipmentOverview(data) {
@@ -20111,6 +20897,10 @@
                 ${hasShipment ? `<button class="oam-item" onclick="_oamAction(event,'shipDetail','${orderId}')"><span class="oam-icon"><i class="bi bi-file-text"></i></span> Sevkiyat Detayları</button>` : ''}
                 ${hasShipment ? `<button class="oam-item" onclick="_oamAction(event,'palletPlan','${orderId}')"><span class="oam-icon"><i class="bi bi-box-seam"></i></span> Palet Planını Görüntüle</button>` : ''}
                 ${hasShipment ? `<button class="oam-item" onclick="_oamAction(event,'vehiclePlan','${orderId}')"><span class="oam-icon">🚛</span> Araç Planını Görüntüle</button>` : ''}
+                ${hasShipment ? `<button class="oam-item" onclick="_oamAction(event,'palletReportPrint','${orderId}')"><span class="oam-icon">🖨️</span> Palet Raporu Yazdır</button>` : ''}
+                ${hasShipment ? `<button class="oam-item" onclick="_oamAction(event,'palletReportExcel','${orderId}')"><span class="oam-icon"><i class="bi bi-file-earmark-excel"></i></span> Palet Raporu Excel</button>` : ''}
+                ${hasShipment ? `<button class="oam-item" onclick="_oamAction(event,'vehicleReportPrint','${orderId}')"><span class="oam-icon">🖨️</span> Araç Raporu Yazdır</button>` : ''}
+                ${hasShipment ? `<button class="oam-item" onclick="_oamAction(event,'vehicleReportExcel','${orderId}')"><span class="oam-icon"><i class="bi bi-file-earmark-excel"></i></span> Araç Raporu Excel</button>` : ''}
                 ${hasShipment ? '<div class="oam-divider"></div>' : ''}
                 ${canMarkReady ? `<button class="oam-item" onclick="_oamAction(event,'markReady','${orderId}')"><span class="oam-icon">✅</span> Sevkiyata Hazırla</button>` : ''}
                 <button class="oam-item" ${!canEdit?'style="opacity:.4;pointer-events:none"':''} onclick="_oamAction(event,'edit','${orderId}')"><span class="oam-icon">✏️</span> Düzenle</button>
@@ -20184,6 +20974,10 @@
                     if(o?.shipment_id) jumpToShipmentStep(o.shipment_id, 5);
                     break;
                 }
+                case 'palletReportPrint': _orderPalletReport(orderId, 'print'); break;
+                case 'palletReportExcel': _orderPalletReport(orderId, 'excel'); break;
+                case 'vehicleReportPrint': _orderVehicleReport(orderId, 'print'); break;
+                case 'vehicleReportExcel': _orderVehicleReport(orderId, 'excel'); break;
                 case 'edit': openEditOrderModal(orderId); break;
                 case 'markReady': _markOrderReady(orderId); break;
                 case 'addShipment': addOrderToShipment(orderId); break;
@@ -21570,6 +22364,36 @@
             document.getElementById('srOverlay').classList.remove('open');
         }
 
+        // Özet Raporu ayrı bir pencerede yazdır (ana doküman window.print() bu sayfada
+        // appShell overflow/fixed-position nedeniyle boş çıkıyordu → kanıtlanmış popup yöntemi)
+        function printSummaryReport() {
+            const content = document.getElementById('srBody')?.innerHTML;
+            if (!content || !content.trim()) { alert('Rapor içeriği bulunamadı. Önce raporu oluşturun.'); return; }
+            const refNo = APP.state.shipmentRefNo || 'TASLAK';
+
+            // Sayfadaki tüm stil ve CSS bağlantılarını (sr-* kuralları + bootstrap-icons) kopyala
+            const styleEls = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+                .map(e => e.outerHTML).join('\n');
+
+            const w = window.open('', '_blank');
+            if (!w) { alert('Yazdırma penceresi açılamadı. Lütfen tarayıcınızda bu site için pop-up engelleyiciyi kapatın.'); return; }
+
+            w.document.write(`<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8">
+                <title>Sevkiyat Özet Raporu — ${refNo}</title>
+                ${styleEls}
+                <style>
+                    /* Popup gövdesini sıfırla: ana uygulamanın koyu/clip body stillerini ez */
+                    html, body { background:#fff !important; color:#222 !important;
+                        height:auto !important; min-height:0 !important; overflow:visible !important;
+                        margin:0 !important; padding:24px !important; display:block !important;
+                        -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+                    @media print { html, body { padding:0 !important; } }
+                </style></head>
+                <body>${content}</body></html>`);
+            w.document.close();
+            w.setTimeout(() => w.print(), 400);
+        }
+
         function _buildSummaryReportHTML() {
             const pallets  = APP.state.pallets || [];
             const sc       = APP.state.selectedScenario;
@@ -21886,7 +22710,7 @@
                     <button class="sr-btn sr-btn-excel" onclick="exportSummaryExcel()">
                         <i class="bi bi-file-earmark-excel"></i> Excel İndir
                     </button>
-                    <button class="sr-btn sr-btn-print" onclick="window.print()">
+                    <button class="sr-btn sr-btn-print" onclick="printSummaryReport()">
                         <i class="bi bi-printer"></i> Yazdır
                     </button>
                     <button class="sr-btn sr-btn-close" onclick="closeSummaryReport()">✕</button>

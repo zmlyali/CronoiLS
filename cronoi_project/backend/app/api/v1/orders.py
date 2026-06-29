@@ -204,6 +204,7 @@ class OrderUpdate(BaseModel):
     priority:            Optional[int] = None
     notes:               Optional[str] = None
     allowed_vehicle_types: Optional[List[str]] = None
+    consolidation_no:    Optional[str] = None                            # Tasarruf No (boş string = grubu kaldır)
     items:               Optional[List[OrderItemUpdate]] = None          # None = dokunma, [] = hepsini sil
     pallet_groups:       Optional[List[OrderPalletGroupUpdate]] = None   # pre-pack için
 
@@ -278,6 +279,7 @@ def _order_to_dict(order: Order, shipment_ref: str = None) -> dict:
         "shipment_ref":          shipment_ref,
         "shipment_id":           shipment_id,
         "allowed_vehicle_types": order.allowed_vehicle_types or [],
+        "consolidation_no":      order.consolidation_no,
         "created_at":            order.created_at.isoformat() if order.created_at else None,
         "deleted_at":            order.deleted_at.isoformat() if order.deleted_at else None,
         "items": [
@@ -663,6 +665,7 @@ async def update_order(
         "postal_code", "country", "contact_name", "contact_phone",
         "contact_email", "order_date", "requested_ship_date",
         "deadline_date", "priority", "notes", "allowed_vehicle_types",
+        "consolidation_no",
     ]
     for field in meta_fields:
         value = getattr(payload, field, None)

@@ -127,11 +127,18 @@ class OptimizerSettings:
     # Yerleşim
     height_safety_margin_cm: float = 0.0
     pallet_gap_cm: float = 3.0
+    # Duvar payı (forklift clearance). Tailored/sıfır-fire yükler için 0 verilebilir.
+    wall_margin_cm: float = 1.0
+    # Aks/COG dengeleme: yükü weight_front_ratio_pct hedefine boylamasına dağıt (geometri korunur)
+    balance_axle_load: bool = True
     enforce_constraints: bool = True
     # Stabilite: istiflenen kutu tabanının min destek oranı (% — altı boşsa devrilir/kayar)
     min_support_ratio_pct: float = 70.0
     # Birim yük: aynı ürünü aynı palete grupla → tek-ürün, düz tepeli, tıra istiflenebilir paletler
     group_same_products: bool = False
+    # Filo araması (solver): palet→araç zemin-duyarlı GRASP arama süre bütçesi (ms) + kullanılabilir hacim faktörü
+    optimizer_time_budget_ms: int = 3000
+    usable_volume_factor_pct: float = 90.0
 
     @classmethod
     def from_dict(cls, d: dict) -> "OptimizerSettings":
@@ -164,9 +171,13 @@ class OptimizerSettings:
             enforce_ispm15=bool(d.get("enforceIspm15", d.get("enforce_ispm15", False))),
             height_safety_margin_cm=float(d.get("heightSafetyMargin", d.get("height_safety_margin_cm", 0))),
             pallet_gap_cm=float(d.get("palletGapCm", d.get("pallet_gap_cm", 3))),
+            wall_margin_cm=float(d.get("wallMarginCm", d.get("wall_margin_cm", 1.0))),
+            balance_axle_load=bool(d.get("balanceAxleLoad", d.get("balance_axle_load", True))),
             enforce_constraints=bool(d.get("enforceConstraints", d.get("enforce_constraints", True))),
             min_support_ratio_pct=float(d.get("minSupportRatioPct", d.get("min_support_ratio_pct", 70.0))),
             group_same_products=bool(d.get("groupSameProducts", d.get("group_same_products", False))),
+            optimizer_time_budget_ms=int(d.get("optimizerTimeBudgetMs", d.get("optimizer_time_budget_ms", 3000))),
+            usable_volume_factor_pct=float(d.get("usableVolumeFactorPct", d.get("usable_volume_factor_pct", 90.0))),
         )
 
 
@@ -408,6 +419,12 @@ class OptimizedPallet:
     order_ids: List[str] = field(default_factory=list)
     delivery_address: str = ""
     load_sequence: int = 0
+    # ── Zemin-duyarlı filo paketleme için (ScenarioOptimizer/fleet_packer) ──
+    footprint_w_cm: float = 0.0          # ayak izi genişliği (cm)
+    footprint_l_cm: float = 0.0          # ayak izi uzunluğu (cm)
+    phys_height_cm: float = 0.0          # taban/tare DAHİL fiziksel yükseklik (cm); 0 → total_height_cm
+    stackable: bool = True               # üst üste konabilir mi (dikey istif)
+    source: str = ""                     # 'prepack' vb. (tare çift sayımı önlemi)
 
 
 @dataclass
@@ -1841,12 +1858,63 @@ class MixedBinPackingOptimizer:
         self.settings = settings or self.params.to_settings()
         self._constraint_engine = constraint_engine
 
-    def optimize(self, products: List[ProductItem]) -> OptimizationResult:
-        start = time.time()
-        input_summary: Dict[str, int] = {}
-        for p in products:
-            input_summary[p.name] = input_summary.get(p.name, 0) + p.quantity
+    def _group_key(self, p: ProductItem):
+        """Ürün kimliği: ad + (yönelimden bağımsız) sıralı boyutlar + kısıtlar."""
+        dims = tuple(sorted((round(p.length_cm, 1), round(p.width_cm, 1), round(p.height_cm, 1))))
+        cons = ",".join(sorted(c.value if hasattr(c, "value") else str(c) for c in p.all_constraints))
+        return (p.name, dims, cons)
 
+    def _select_mixed_pallets(self, products: List[ProductItem]):
+        """KARMA PALET SEÇİMİ (allow_mixed_pallet_types=True).
+        Ürünleri kimliklerine göre grupla; her gruba ÇÖZÜM KÜMESİNDEN (aktif palet tipleri)
+        en uygun paleti seç. Hedef: 'önce tır, eşitlikte az palet' → grup başına TIR ZEMİNİNİ
+        en az dolduran (toplam ayak izi = palet sayısı × footprint) tipi seç, eşitlikte daha az
+        palet, sonra daha yüksek doluluk. Küçük ürün → küçük palet → tır zemini israf olmaz
+        (her şeyi tek dev-palete koyan eski Faz-1 tuzağını bitirir).
+        Dönüş: (selected_pallets, rejected, warnings)."""
+        from collections import defaultdict
+        groups: Dict = defaultdict(list)
+        for p in products:
+            groups[self._group_key(p)].append(p)
+
+        selected: List[OptimizedPallet] = []
+        rejected: list = []
+        warnings: list = []
+        EPS = 1e-6
+        ordered = sorted(groups.items(), key=lambda kv: -(kv[1][0].volume_cm3))
+        for key, prods in ordered:
+            best = None   # (floor_area, pallet_count, -fill, cfg, result)
+            for cfg in self.configs:
+                trial = BinPackingOptimizer3D(cfg, params=self.params, settings=self.settings,
+                                             constraint_engine=self._constraint_engine)
+                tr = trial.optimize(prods)
+                if (tr.rejected_items or not tr.quantity_audit.get('balanced', False)
+                        or not tr.constraints_satisfied or not tr.pallets):
+                    continue   # ürün bu palete GERÇEKTEN sığmalı (oversized/red yok)
+                floor = len(tr.pallets) * cfg.width_cm * cfg.length_cm
+                cand = (floor, len(tr.pallets), -tr.avg_fill_rate_pct, cfg, tr)
+                if best is None or cand[:3] < best[:3]:   # lexicographic: zemin↓, palet↓, doluluk↑
+                    best = cand
+            if best is None:
+                # Hiçbir aktif palete tam sığmadı → default ile dene (oversized/red mümkün)
+                fb = BinPackingOptimizer3D(self.default, params=self.params, settings=self.settings,
+                                          constraint_engine=self._constraint_engine).optimize(prods)
+                selected.extend(fb.pallets)
+                rejected.extend(fb.rejected_items)
+                warnings.extend(fb.warnings)
+                logger.warning(f"[Mixed] '{key[0]}' hiçbir aktif palete tam sığmadı → default {self.default.type}")
+                continue
+            selected.extend(best[4].pallets)
+            logger.info(f"[Mixed] '{key[0]}' ×{sum(p.quantity for p in prods)} → {best[3].type} "
+                        f"({best[3].width_cm:.0f}×{best[3].length_cm:.0f}) : {best[1]} palet")
+
+        for i, pal in enumerate(selected, 1):
+            pal.pallet_number = i
+        return selected, rejected, warnings
+
+    def _select_single_global(self, products: List[ProductItem]):
+        """ESKİ DAVRANIŞ (allow_mixed_pallet_types=False veya tek palet tipi):
+        tek global tip seç + palet bazlı iyileştirme. Dönüş: (improved_pallets, rejected, warnings)."""
         # ── Faz 1: Global karşılaştırma — her palet tipiyle TÜM ürünleri dene ──
         # Hangisi minimum palet sayısı veriyorsa onu seç
         best_global_result = None
@@ -1915,6 +1983,20 @@ class MixedBinPackingOptimizer:
 
         all_rejected = list(best_global_result.rejected_items)
         all_warnings = list(best_global_result.warnings)
+        return improved_pallets, all_rejected, all_warnings
+
+    def optimize(self, products: List[ProductItem]) -> OptimizationResult:
+        start = time.time()
+        input_summary: Dict[str, int] = {}
+        for p in products:
+            input_summary[p.name] = input_summary.get(p.name, 0) + p.quantity
+
+        # ── Palet seçimi: KARMA (varsayılan, ayar açık) veya tek-global (eski) ──
+        if self.settings.allow_mixed_pallet_types and len(self.configs) > 1:
+            improved_pallets, all_rejected, all_warnings = self._select_mixed_pallets(products)
+        else:
+            improved_pallets, all_rejected, all_warnings = self._select_single_global(products)
+
         duration_ms = int((time.time() - start) * 1000)
 
         total_weight = sum(p.total_weight_kg for p in improved_pallets)
@@ -2040,6 +2122,10 @@ class VehicleAssignment:
     vol_utilization_pct: float = 0.0
     weight_utilization_pct: float = 0.0
     pallet_utilization_pct: float = 0.0
+    # ── Zemin-duyarlı filo (fleet_packer) ──
+    used_len_cm: float = 0.0
+    ldm: float = 0.0
+    ldm_fill_pct: float = 0.0
 
 
 @dataclass
@@ -2053,6 +2139,12 @@ class ScenarioResult:
     avg_fill_rate_pct: float
     is_recommended: bool = False
     avg_balance_pct: float = 0.0
+    # ── Zemin-duyarlı filo (fleet_packer) ──
+    lower_bound: int = 0
+    proven_optimal: bool = False
+    vehicle_type_id: str = ""
+    engine: str = "binding-greedy"
+    iterations: int = 0
 
 
 class ScenarioOptimizer:
@@ -2072,6 +2164,18 @@ class ScenarioOptimizer:
     def generate_all(self) -> List[ScenarioResult]:
         if not self.pallets or not self.vehicles:
             return []
+        # Palet ayak izi verisi varsa SOLVER-sınıfı zemin-duyarlı motoru kullan;
+        # yoksa (eski/eksik veri) hacim-tabanlı greedy'e güvenli geri dönüş.
+        if self._has_footprint_data():
+            try:
+                floor = self._generate_all_floor_aware()
+                if floor:
+                    return floor
+            except Exception:                       # pragma: no cover — motor hatasında düşme
+                logger.exception("[Scenario] zemin-duyarlı motor hata verdi → legacy greedy")
+        return self._generate_all_legacy()
+
+    def _generate_all_legacy(self) -> List[ScenarioResult]:
         scenarios = [
             self._generate(ScenarioStrategy.MIN_VEHICLES),
             self._generate(ScenarioStrategy.BALANCED),
@@ -2082,6 +2186,105 @@ class ScenarioOptimizer:
             best = min(valid, key=lambda s: (s.total_vehicles, s.total_cost, -s.avg_fill_rate_pct))
             best.is_recommended = True
         return scenarios
+
+    # ════════════════════════════════════════════════════════════
+    # SOLVER-SINIFI ZEMİN-DUYARLI FİLO (fleet_packer)
+    # ════════════════════════════════════════════════════════════
+
+    def _has_footprint_data(self) -> bool:
+        return bool(self.pallets) and all(
+            (p.footprint_w_cm or 0) > 0 and (p.footprint_l_cm or 0) > 0 for p in self.pallets)
+
+    def _to_fleet_pallet(self, p: OptimizedPallet):
+        from app.services.fleet_packer import FleetPallet
+        h = p.phys_height_cm if (p.phys_height_cm or 0) > 0 else (p.total_height_cm or 0)
+        cons = [c.value if hasattr(c, "value") else str(c) for c in (p.constraints or [])]
+        return FleetPallet(
+            id=p.pallet_number, w_cm=p.footprint_w_cm, l_cm=p.footprint_l_cm, h_cm=h,
+            weight_kg=p.total_weight_kg or 0.0, volume_m3=p.total_volume_m3 or 0.0,
+            stackable=bool(p.stackable), constraints=cons,
+        )
+
+    def _to_fleet_type(self, v: VehicleConfig):
+        from app.services.fleet_packer import FleetVehicleType
+        return FleetVehicleType(
+            id=v.id, name=v.name, type=v.type,
+            length_cm=v.length_cm, width_cm=v.width_cm, height_cm=v.height_cm,
+            max_weight_kg=v.max_weight_kg, pallet_capacity=v.pallet_capacity,
+            usable_volume_m3=0.0, total_cost=v.total_cost,
+        )
+
+    def _generate_all_floor_aware(self) -> List[ScenarioResult]:
+        from app.services import fleet_packer as fp
+        fleet_pallets = [self._to_fleet_pallet(p) for p in self.pallets]
+        fleet_types = [self._to_fleet_type(v) for v in self.vehicles]
+        budget_s = max(0.3, min(self.settings.optimizer_time_budget_ms / 1000.0, 5.0))
+        results = fp.evaluate_all_fleet_types(
+            fleet_pallets, fleet_types, self.settings, budget_s,
+            self.settings.usable_volume_factor_pct)
+        if not results:
+            logger.warning("[FleetSolver] zemin-duyarlı motor uygun tip bulamadı → legacy")
+            return []
+
+        # ── Net görünürlük: her tip için araç/LB/iterasyon/optimum logla ──
+        total_iters = sum(r.get("iterations", 0) for r in results)
+        n_stack = sum(1 for p in fleet_pallets if p.stackable)
+        logger.info(
+            "[FleetSolver] %d palet (%d istiflenebilir) · %d araç tipi · bütçe=%.1fs · TOPLAM %d iterasyon",
+            len(fleet_pallets), n_stack, len(results), budget_s, total_iters)
+        for r in sorted(results, key=lambda r: (r["count"], r["total_cost"])):
+            logger.info(
+                "[FleetSolver]   %-16s → %d araç (alt-sınır %d, %s) · %d iterasyon · ldm≈%.0f%%",
+                r["vt"].name, r["count"], r["lower_bound"],
+                "KANITLANMIŞ OPTİMUM" if r["proven_optimal"] else "bütçe doldu (en iyi bulunan)",
+                r.get("iterations", 0), r.get("avg_ldm_fill", 0))
+
+        by_count = sorted(results, key=lambda r: (r["count"], r["total_cost"], -r["avg_ldm_fill"]))
+        by_fill = sorted(results, key=lambda r: (-r["avg_ldm_fill"], r["count"], r["total_cost"]))
+        by_cpp = sorted(results, key=lambda r: (r["total_cost"] / max(1, len(self.pallets)), r["count"]))
+
+        scenarios = [
+            self._scenario_from_result("En Az Araç", ScenarioStrategy.MIN_VEHICLES, by_count[0]),
+            self._scenario_from_result("Dengeli Dağılım", ScenarioStrategy.BALANCED, by_cpp[0]),
+            self._scenario_from_result("Max Verimlilik", ScenarioStrategy.MAX_EFFICIENCY, by_fill[0]),
+        ]
+        valid = [s for s in scenarios if s.total_vehicles > 0]
+        if valid:
+            best = min(valid, key=lambda s: (s.total_vehicles, s.total_cost, -s.avg_fill_rate_pct))
+            best.is_recommended = True
+        return scenarios
+
+    def _scenario_from_result(self, name: str, strategy: ScenarioStrategy,
+                              res: Dict[str, Any]) -> ScenarioResult:
+        vt = res["vt"]
+        vehicle_cfg = next((v for v in self.vehicles if v.id == vt.id), self.vehicles[0])
+        pallet_by_num = {p.pallet_number: p for p in self.pallets}
+        assignments: List[VehicleAssignment] = []
+        for v in res["fleet"]:
+            assigned = [pallet_by_num[pid] for pid in v["assignedPallets"] if pid in pallet_by_num]
+            va = VehicleAssignment(
+                vehicle=vehicle_cfg, pallet_ids=list(v["assignedPallets"]),
+                current_weight_kg=round(v["currentWeight"], 2),
+                current_volume_m3=round(v["currentVolume"], 4),
+                cost=round(vehicle_cfg.total_cost, 2),
+            )
+            self._compute_binding(va, assigned)
+            self._compute_weight_balance(va, assigned)
+            # GERÇEK aks dağılımı: zemin-duyarlı motorda pack_floor pozisyonlarından (sıra-tabanlı
+            # tahmini ezer). Aks dengeleyici yükü hedefe çektiyse rapor da bunu yansıtır.
+            self._apply_real_axle_balance(va, v, vt)
+            va.used_len_cm = round(v.get("usedLenCm", 0.0), 1)
+            va.ldm = v.get("ldm", 0.0)
+            va.ldm_fill_pct = v.get("ldmFillPct", 0.0)
+            assignments.append(va)
+
+        sr = self._build_scenario(name, strategy, assignments)
+        sr.lower_bound = res.get("lower_bound", 0)
+        sr.proven_optimal = bool(res.get("proven_optimal", False))
+        sr.iterations = res.get("iterations", 0)
+        sr.vehicle_type_id = vt.id
+        sr.engine = "floor-aware-alns"
+        return sr
 
     def _generate(self, strategy: ScenarioStrategy) -> ScenarioResult:
         if strategy == ScenarioStrategy.MIN_VEHICLES:
@@ -2103,6 +2306,19 @@ class ScenarioOptimizer:
         va.pallet_utilization_pct = round(pr, 1)
         ratios = {"volume": vr, "weight": wr, "pallet_count": pr}
         va.binding_dimension = max(ratios, key=ratios.get) if any(v > 0 for v in ratios.values()) else "volume"
+
+    def _apply_real_axle_balance(self, va: VehicleAssignment, fleet_vehicle: dict, vt):
+        """Zemin-duyarlı motorun GERÇEK pack_floor pozisyonlarından ön-aks yükünü hesapla
+        ve sıra-tabanlı tahmini ez (aks dengeleyici sonrası doğru raporlama)."""
+        from app.services import fleet_packer as fp
+        front = fp.vehicle_axle_front_pct(
+            fleet_vehicle, vt, fp._gap_for(self.settings), fp._margin_for(self.settings))
+        if front is None:
+            return
+        va.front_pct = round(front, 1)
+        va.front_weight_kg = round(va.current_weight_kg * front / 100.0, 1)
+        va.rear_weight_kg = round(va.current_weight_kg * (100.0 - front) / 100.0, 1)
+        va.balance_ok = abs(front - self.settings.weight_front_ratio_pct) <= self.settings.weight_front_tolerance_pct
 
     def _compute_weight_balance(self, va: VehicleAssignment, assigned: List[OptimizedPallet]):
         v = va.vehicle
